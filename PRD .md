@@ -1,6 +1,6 @@
 # Network Watch: Product Requirements Document
 
-**Document version:** 2.0 | **Product version:** v0.2 (all planned functionality built) | **Owner:** Rishika Chaurasia
+**Document version:** 1.0 | **Product version:** v0.2 (all planned functionality built) | **Owner:** Rishika Chaurasia
 
 ## 0. Data disclosure (read first)
 - **Both transportation networks (Southeast US, Germany) are synthetic.** Hubs, lanes, capacities, volumes and costs are invented. This is an independent portfolio project. It is not an Amazon system and uses no Amazon data.
