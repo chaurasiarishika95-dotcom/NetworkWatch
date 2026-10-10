@@ -1,74 +1,18 @@
-
-import { COORD } from '../../../lib/network';
-
-export const dynamic = 'force-dynamic';
-
-export async function GET() {
-  try {
-    const ids = Object.keys(COORD);
-
-    const results = await Promise.all(
-      ids.map(async (id) => {
-        const [latitude, longitude] = COORD[id];
-
-        const params = new URLSearchParams({
-          latitude: String(latitude),
-          longitude: String(longitude),
-          current: 'wind_speed_10m,wind_gusts_10m,precipitation,rain,snowfall',
-          hourly: 'precipitation,rain,snowfall',
-          forecast_days: '1',
-          wind_speed_unit: 'mph',
-          precipitation_unit: 'mm',
-          timezone: 'auto'
-        });
-
-        const response = await fetch(
-          `https://api.open-meteo.com/v1/forecast?${params}`,
-          { cache: 'no-store' }
-        );
-
-        if (!response.ok) {
-          throw new Error(`Weather request failed for ${id}`);
-        }
-
-        const data = await response.json();
-        const current = data.current;
-
-        if (
-          !current ||
-          current.wind_gusts_10m == null ||
-          current.precipitation == null
-        ) {
-          throw new Error(`Incomplete weather data for ${id}`);
-        }
-
-        return [
-          id,
-          {
-            wind: current.wind_speed_10m ?? 0,
-            gust: current.wind_gusts_10m,
-            rain: current.rain ?? 0,
-            precipitation: current.precipitation,
-            snow: current.snowfall ?? 0,
-            time: current.time,
-            timezone: data.timezone,
-            source: 'Open-Meteo'
-          }
-        ];
-      })
-    );
-
-    return Response.json({
-      nodes: Object.fromEntries(results),
-      fetchedAt: new Date().toISOString(),
-      source: 'Open-Meteo'
-    });
-  } catch (error) {
-    console.error('Live weather fetch failed:', error);
-
-    return Response.json(
-      { error: 'Live weather unavailable. Please retry.' },
-      { status: 502 }
-    );
-  }
+import {COORD} from '../../../lib/network';
+export const dynamic='force-dynamic';
+export async function GET(){
+ try{
+  const ids=Object.keys(COORD);
+  const lat=ids.map(i=>COORD[i][0]).join(','),lon=ids.map(i=>COORD[i][1]).join(',');
+  const [om,al]=await Promise.all([
+   fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_gusts_10m,precipitation&wind_speed_unit=mph`,{cache:'no-store'}),
+   fetch('https://api.weather.gov/alerts/active?area=FL',{headers:{'User-Agent':'network-watch-portfolio-demo','Accept':'application/geo+json'},cache:'no-store'}).catch(()=>null)
+  ]);
+  if(!om.ok)throw new Error('weather');
+  const j=await om.json(),arr=Array.isArray(j)?j:[j],nodes={};
+  ids.forEach((id,i)=>{const c=arr[i]?.current||{};nodes[id]={gust:c.wind_gusts_10m??0,rain:c.precipitation??0}});
+  let alerts=[];
+  if(al&&al.ok){const g=await al.json(),m={};(g.features||[]).forEach(f=>{const e=f.properties?.event;if(e)m[e]=(m[e]||0)+1});alerts=Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([event,count])=>({event,count}))}
+  return Response.json({nodes,alerts,fetchedAt:new Date().toISOString()});
+ }catch(e){return Response.json({error:'Live weather is unavailable right now.'},{status:502})}
 }
