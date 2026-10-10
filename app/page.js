@@ -54,24 +54,27 @@ function calc(Rg,cuts,sel){
  return{lanes,gap,lost,sol,div,cap,rem,prm,late,cost:(sel.div&&sol.total?sol.cost*div/sol.total:0)+cap*1.6+prm*.3};
 }
 
+const scale=(cuts,x)=>Object.fromEntries(Object.entries(cuts).map(([i,v])=>[i,Math.min(1,v*x)]));
+// Recommendation rule: reroute if it costs $2.30/package or less, then temporary capacity, then promise resets for the remainder.
+function recPlan(Rg,cuts){const r0=calc(Rg,cuts,{}),u0=r0.sol.total?r0.sol.cost/r0.sol.total:0;let m=r0.gap;const useDiv=r0.sol.total>0&&u0<=2.3,d=useDiv?Math.min(m,r0.sol.total):0;m-=d;const useCap=m>.5,c=useCap?Math.min(m,.35*r0.lost):0;m-=c;const usePrm=m>.5;return{r0,u0,useDiv,d,useCap,c,usePrm,m,sel:{div:useDiv,cap:useCap,pri:false,prm:usePrm}}}
 const f=n=>Math.round(n).toLocaleString('en-US');
 const OPTS=[['div','Divert volume to unaffected lanes'],['cap','Add temporary capacity'],['pri','Prioritize SLA-critical packages'],['prm','Adjust delivery promises (+1 day)']];
 const col=u=>u>1?'var(--bad)':u>.85?'var(--warn)':'var(--ok)';
-const MEANING={'Rip Current Statement':'Dangerous currents for swimmers at beaches. Does not affect trucks or lanes.','Flood Watch':'Flooding is possible but has not started. Some roads could be affected later.','Flood Warning':'Flooding is happening, usually along rivers. A few local roads may close.','Coastal Flood Advisory':'Minor flooding near the coast at high tide. Low impact on trucking.','Coastal Flood Statement':'Update on minor coastal flooding. Low impact on trucking.'};
+const MEANING={'Rip Current Statement':'Dangerous currents for swimmers at beaches. Does not affect trucks or lanes.','Flood Watch':'Flooding is possible but has not started. Some roads could be affected later.','Flood Warning':'Flooding is happening, usually along rivers. A few local roads may close.','Coastal Flood Advisory':'Minor flooding near the coast at high tide. Low impact on trucking.','Coastal Flood Statement':'Update on minor coastal flooding. Low impact on trucking.','High Surf Advisory':'Large waves at beaches. Does not affect trucks or lanes.','Tropical Cyclone Local Statement':'Local impacts expected from a tropical storm or hurricane. Check whether coastal lanes could be hit.'};
 const SEVERE=/hurricane|tropical|tornado|storm surge|high wind|extreme wind|blizzard|ice storm|winter storm/i;
 
-function LiveBox({live,Rg,us}){
+function LiveBox({live,Rg,us,gap}){
  if(!live)return <p className="note">Loading current conditions...</p>;
  if(live.error)return <p className="note">{live.error} Pick a saved scenario instead.</p>;
  const ids=Object.keys(live.nodes),N=Rg.NM;
  const gid=ids.reduce((a,b)=>live.nodes[b].gust>live.nodes[a].gust?b:a),rid=ids.reduce((a,b)=>live.nodes[b].rain>live.nodes[a].rain?b:a);
  const g=live.nodes[gid].gust,rn=live.nodes[rid].rain,hit=ids.filter(i=>cutOf(live.nodes[i])>0);
- const lvl=hit.length?'Disruptive':g>=20?'Breezy':'Calm',color=hit.length?'var(--bad)':g>=20?'var(--warn)':'var(--ok)';
+ const lvl=hit.length?(gap>0?'Disruptive':'Watch'):g>=20?'Breezy':'Calm',color=gap>0?'var(--bad)':hit.length||g>=20?'var(--warn)':'var(--ok)';
  const sev=live.alerts.filter(a=>SEVERE.test(a.event));
  return(<div className="verdict" style={{borderLeft:'5px solid '+color}}>
   <b>Live weather right now: {lvl}</b>
-  <div className="note" style={{color:'var(--ink)'}}>{hit.length?`Wind, rain or snow is strong enough to cut capacity at: ${hit.map(i=>N[i]).join(', ')}.`:`No hub is hit hard enough to lose capacity. The windiest hub is ${N[gid]} at ${Math.round(g)} mph gusts (capacity only starts dropping above 35 mph). The wettest is ${N[rid]} at ${rn.toFixed(1)} mm of rain per hour (heavy rain starts at about 2).`}</div>
-  <div className="note" style={{color:'var(--ink)',marginTop:6}}><b>Network impact:</b> {hit.length||sev.length?'Possible. Look at the map and the numbers below.':'None. The network runs normally, so overflow is 0.'}</div>
+  <div className="note" style={{color:'var(--ink)'}}>{hit.length?`Weather is cutting capacity at: ${hit.map(i=>N[i]).join(', ')}.${gap>0?'':' Today\'s volume still fits, so no action is needed yet.'}`:`No hub is hit hard enough to lose capacity. The windiest hub is ${N[gid]} at ${Math.round(g)} mph gusts (capacity only starts dropping above 35 mph). The wettest is ${N[rid]} at ${rn.toFixed(1)} mm of rain per hour (heavy rain starts at about 2).`}</div>
+  <div className="note" style={{color:'var(--ink)',marginTop:6}}><b>Network impact:</b> {gap>0?'Yes. Look at the map and the numbers below.':hit.length||sev.length?'Capacity is reduced but nothing overflows yet. See the early warning below.':'None. The network runs normally, so overflow is 0.'}</div>
   {us?<><div className="note" style={{marginTop:6}}><b>Official alerts in Florida</b> (National Weather Service, as of {new Date(live.fetchedAt).toLocaleTimeString()}):</div>
   {live.alerts.length?<ul className="why">{live.alerts.map(a=><li key={a.event}><b>{a.event}{a.count>1?' (x'+a.count+')':''}:</b> {MEANING[a.event]||'See weather.gov for details.'} <i>{SEVERE.test(a.event)?'Could disrupt lanes.':'Not a trucking threat.'}</i></li>)}</ul>:<div className="note">No active alerts.</div>}
   <div className="note">Alerts are shown for context. The model uses weather readings only.</div></>:<div className="note" style={{marginTop:6}}>Conditions from Open-Meteo as of {new Date(live.fetchedAt).toLocaleTimeString()}. Official German weather alerts are not included.</div>}
@@ -112,11 +115,15 @@ export default function Home(){
  const w=r.lanes.filter(l=>l.over>0).sort((a,b)=>b.over-a.over).slice(0,4),uc=r.sol.total?r.sol.cost/r.sol.total:0;
  const tog=key=>setSel(s=>({...s,[key]:!s[key]})),pick=x=>{setRg(x);setSid(x==='us'?'ian':'snow')};
  const desc={div:`Cheapest detours through lanes that still have room: up to ${f(r.sol.total)} packages/day at about $${uc.toFixed(2)} each.${r.gap>0&&r.sol.total<r.gap*.25?' Little room because most nearby lanes are also damaged.':''}`,cap:`Recovers up to ${f(.35*r.lost)} packages/day. $1.60 each. Takes hours to stand up.`,pri:'Critical packages (about 35% of overflow) go first. Free, but the rest still arrive late.',prm:`Resets dates on ${f(r.rem)} remaining packages before customers are let down. $0.30 each in credits.`};
- const recommend=()=>{const r0=calc(Rg,cuts,{}),u0=r0.sol.total?r0.sol.cost/r0.sol.total:0;let m=r0.gap;const useDiv=r0.sol.total>0&&u0<=2.3,d=useDiv?Math.min(m,r0.sol.total):0;m-=d;const useCap=m>.5,c=useCap?Math.min(m,.35*r0.lost):0;m-=c;const usePrm=m>.5;setSel({div:useDiv,cap:useCap,pri:false,prm:usePrm});setRec(!r0.gap?'Nothing to fix: every lane is within capacity.':`Used operational fixes before changing promises: ${useDiv?`reroute ${f(d)} packages (about $${u0.toFixed(2)} each), `:'rerouting was skipped because no lane has room or it costs too much, '}${useCap?`add temporary capacity for ${f(c)} ($1.60 each), `:''}${usePrm?`and reset promises only on the ${f(m)} packages nothing else can carry. Each reset is ranked at an assumed $2 trust cost on top of the $0.30 credit, so it comes last.`:'so no promise changes are needed.'} You can switch any response on or off to override this.`)};
+ const recommend=()=>{const {r0,u0,useDiv,d,useCap,c,usePrm,m,sel:ns}=recPlan(Rg,cuts);setSel(ns);setRec(!r0.gap?'Nothing to fix: every lane is within capacity.':`Used operational fixes before changing promises: ${useDiv?`reroute ${f(d)} packages (about $${u0.toFixed(2)} each), `:'rerouting was skipped because no lane has room or it costs too much, '}${useCap?`add temporary capacity for ${f(c)} ($1.60 each), `:''}${usePrm?`and reset promises only on the ${f(m)} packages nothing else can carry. Each reset is ranked at an assumed $2 trust cost on top of the $0.30 credit, so it comes last.`:'so no promise changes are needed.'} You can switch any response on or off to override this.`)};
  const chosen=OPTS.filter(([key])=>sel[key]).map(o=>o[1]);
  const facts={region:Rg.name,scenario:sid==='live'?'Live conditions':Rg.SC[sid].name,intensityPercent:k,overCapacityPerDay:Math.round(r.gap),stillLate:Math.round(r.late),promisesReset:Math.round(r.prm),planCostPerDay:Math.round(r.cost),responsesChosen:chosen,worstLanes:w.map(l=>`${N[l.a]} to ${N[l.b]}: capacity ${Math.round(l.c)} to ${Math.round(l.eff)}, volume ${l.v}, short ${Math.round(l.over)}`),reroutes:r.sol.plans.slice(0,3).map(p=>`${N[p.from]} to ${N[p.to]} via ${p.via.map(i=>N[i]).join(' and ')}: ${Math.round(p.units)} packages at $${p.unit.toFixed(2)} each`)};
  const template=()=>!facts.overCapacityPerDay?`Under "${facts.scenario}", every lane stays within capacity, so no packages are at risk.`:`Under "${facts.scenario}", about ${f(facts.overCapacityPerDay)} packages a day no longer fit on damaged lanes, mainly ${facts.worstLanes.slice(0,2).map(s=>s.split(':')[0]).join(' and ')}. ${chosen.length?`Your plan (${chosen.join(', ').toLowerCase()}) leaves ${f(facts.stillLate)} late and resets promises on ${f(facts.promisesReset)}, at $${f(facts.planCostPerDay)} per day.`:'You have not chosen a response yet, so all of them would be late.'} ${sel.prm?'Resetting promises is cheap but spends customer trust.':facts.stillLate>0?'No option here is free: you trade cost against late packages and customer trust.':'Everything is protected, but check what that costs.'} This is a simulation with invented data.`;
  const explain=async()=>{setEx({loading:true});try{const res=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(facts)});const j=await res.json();if(res.ok&&j.text)return setEx({text:j.text,source:'Gemini AI'});throw 0}catch(e){setEx({text:template(),source:'Template (Gemini not available)'})}};
+ const calm=!r.gap,anyCut=Object.values(cuts).some(v=>v>0);
+ let worse=null;if(calm&&anyCut)for(let x=1.1;x<=3.01;x+=.1){if(calc(Rg,scale(cuts,x),{}).gap>0){worse=x;break}}
+ const sx=worse?Math.min(3,worse+.5):null,st=sx?recPlan(Rg,scale(cuts,sx)):null,stCost=st&&st.r0.gap>0?calc(Rg,scale(cuts,sx),st.sel).cost:0;
+ const tight=[...r.lanes].sort((a,b)=>b.v/b.eff-a.v/a.eff).slice(0,3);
  const hint={fontSize:'13px',margin:'0 0 8px'};
  return(<main>
   <h1>Network Watch</h1>
@@ -138,12 +145,18 @@ export default function Home(){
     <div className="row">{[['us','Southeast US'],['de','Germany']].map(([id,n])=><button key={id} className="chip" aria-pressed={rg===id} onClick={()=>pick(id)}>{n}</button>)}</div>
     <p className="note" style={hint}>{Rg.hint}</p>
     <div className="row">{[...Object.entries(Rg.SC).map(([id,s])=>[id,s.name]),['live','Live now']].map(([id,n])=><button key={id} className="chip" aria-pressed={sid===id} onClick={()=>setSid(id)}>{n}</button>)}</div>
-    {sid==='live'?<LiveBox live={live} Rg={Rg} us={rg==='us'}/>:<p className="note">{Rg.SC[sid].note}</p>}
+    {sid==='live'?<LiveBox live={live} Rg={Rg} us={rg==='us'} gap={r.gap}/>:<p className="note">{Rg.SC[sid].note}</p>}
     <label className="note">Weather intensity: {k}%<input type="range" min="0" max="100" value={k} onChange={e=>setK(+e.target.value)} style={{width:'100%'}}/></label>
     <div className="stats" aria-live="polite" style={{gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))'}}>{[['Over capacity / day',f(r.gap)],['Delivered on time',f(r.div+r.cap)],['Given a new date',f(r.prm)],['Still late',f(r.late)],['Plan cost / day','$'+f(r.cost)]].map(([a,b])=><div key={a}><small>{a}</small><span className="big">{b}</span></div>)}</div>
     <div className="bar" aria-hidden="true">{[[r.div,'var(--ok)'],[r.cap,'var(--mute)'],[r.prm,'var(--warn)'],[r.late,'var(--bad)']].map(([v,c],i)=><i key={i} style={{width:v/t*100+'%',background:c}}/>)}</div>
     <p className="note">Packages are counted per lane, so one that crosses two damaged lanes is counted twice. Treat totals as an upper bound.</p>
     <p className="verdict" aria-live="polite">{!r.gap?'No overflow with these conditions. Try another scenario or raise intensity.':nsel?`With your plan: ${f(r.late)} packages still late, ${f(r.prm)} given a new date, cost $${f(r.cost)} per day.`:`Doing nothing: ${f(r.gap)} packages per day miss their promise. Pick a response below.`}</p>
+    {calm&&<div className="verdict" style={{borderLeft:'5px solid var(--warn)'}}><b>Early warning: nothing to fix right now</b>
+     <div className="note" style={{color:'var(--ink)'}}>{anyCut?(worse?`Weather is cutting capacity, but today's volume still fits. Overflow would start if conditions got about ${Math.round((worse-1)*100)}% worse.`:'Weather is cutting capacity, but volume still fits even if conditions got much worse.'):'Weather is not reducing capacity anywhere, so there is nothing for the planner to do.'}</div>
+     <div className="note">Closest to capacity: {tight.map(l=>`${N[l.a]} to ${N[l.b]} (${Math.round(l.v/Math.max(1,l.eff)*100)}% used, room for ${f(l.spare)} more)`).join('; ')}.</div>
+     {stCost>0&&<div className="note" style={{color:'var(--ink)'}}>If conditions got about {Math.round((sx-1)*100)}% worse: about {f(st.r0.gap)} packages/day over capacity. Suggested response: {[st.useDiv&&`reroute ${f(st.d)}`,st.useCap&&`add temporary capacity for ${f(st.c)}`,st.usePrm&&`reset promises on ${f(st.m)}`].filter(Boolean).join(', ')}, costing about ${f(stCost)} per day.</div>}
+     <div className="note" style={{marginTop:6}}>To see the responses in action, try a saved scenario:</div>
+     <div className="row" style={{marginTop:4}}>{Object.entries(Rg.SC).map(([id,sc])=><button key={id} className="chip" onClick={()=>setSid(id)}>{sc.name}</button>)}</div></div>}
     <h2>2. Choose your response</h2>
     <button type="button" className="chip" onClick={recommend} style={{marginBottom:8,fontWeight:700}}>Recommend a plan</button>
     {rec&&<p className="verdict">{rec}</p>}
