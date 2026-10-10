@@ -4,15 +4,20 @@ import {useState,useEffect,useMemo} from 'react';
 // ALL NETWORK DATA IS SYNTHETIC (invented for this demo, not Amazon data).
 // gust = mph, rain = mm/hour, snow = cm/hour. Saved scenarios are illustrative approximations, not official records.
 const R={
- us:{name:'Southeast US',hint:'Start with Hurricane Ian to see the full effect. "Live now" shows today\'s real weather, which is often calm.',
-  P:{CLT:[500,90],BNA:[200,70],BHM:[150,200],ATL:[320,200],SAV:[510,235],JAX:[520,330],MCO:[480,420],TPA:[360,440],RSW:[400,510],MIA:[590,500]},
-  NM:{CLT:'Charlotte',BNA:'Nashville',BHM:'Birmingham',ATL:'Atlanta',SAV:'Savannah',JAX:'Jacksonville',MCO:'Orlando',TPA:'Tampa',RSW:'Fort Myers',MIA:'Miami'},
-  L:[['BNA','ATL',6000,4300],['BNA','BHM',3000,1900],['BHM','ATL',5000,3600],['CLT','ATL',7000,5200],['CLT','SAV',3500,2300],['ATL','SAV',5500,3900],['ATL','JAX',9000,6400],['SAV','JAX',5000,3300],['JAX','MCO',8000,5900],['JAX','TPA',6000,4100],['ATL','TPA',5000,3200],['ATL','MCO',6500,4200],['MCO','TPA',4500,3000],['MCO','RSW',4000,2800],['TPA','RSW',4000,2900],['MCO','MIA',6000,4300],['RSW','MIA',3500,2100]],
+ us:{name:'United States',vb:'0 0 900 600',hint:'Start with Hurricane Ian to see the full effect. "Live now" shows today\'s real weather at every hub, which is often calm.',
+  P:{SEA:[90,70],SFO:[60,250],LAX:[120,390],PHX:[250,440],DEN:[330,260],DAL:[440,440],HOU:[470,520],MSP:[470,110],KC:[480,280],CHI:[600,180],NYC:[780,190],BOS:[830,100],CLT:[760,326],BNA:[574,313],BHM:[543,394],ATL:[648,394],SAV:[766,416],JAX:[772,475],MCO:[748,530],TPA:[673,543],RSW:[698,586],MIA:[816,580]},
+  NM:{SEA:'Seattle',SFO:'San Francisco',LAX:'Los Angeles',PHX:'Phoenix',DEN:'Denver',DAL:'Dallas',HOU:'Houston',MSP:'Minneapolis',KC:'Kansas City',CHI:'Chicago',NYC:'New York',BOS:'Boston',CLT:'Charlotte',BNA:'Nashville',BHM:'Birmingham',ATL:'Atlanta',SAV:'Savannah',JAX:'Jacksonville',MCO:'Orlando',TPA:'Tampa',RSW:'Fort Myers',MIA:'Miami'},
+  C:{SEA:[47.61,-122.33],SFO:[37.77,-122.42],LAX:[34.05,-118.24],PHX:[33.45,-112.07],DEN:[39.74,-104.99],DAL:[32.78,-96.8],HOU:[29.76,-95.37],MSP:[44.98,-93.27],KC:[39.1,-94.58],CHI:[41.88,-87.63],NYC:[40.71,-74.01],BOS:[42.36,-71.06],CLT:[35.22,-80.84],BNA:[36.16,-86.78],BHM:[33.52,-86.8],ATL:[33.75,-84.39],SAV:[32.08,-81.09],JAX:[30.33,-81.66],MCO:[28.54,-81.38],TPA:[27.95,-82.46],RSW:[26.64,-81.87],MIA:[25.76,-80.19]},
+  L:[['BNA','ATL',6000,4300],['BNA','BHM',3000,1900],['BHM','ATL',5000,3600],['CLT','ATL',7000,5200],['CLT','SAV',3500,2300],['ATL','SAV',5500,3900],['ATL','JAX',9000,6400],['SAV','JAX',5000,3300],['JAX','MCO',8000,5900],['JAX','TPA',6000,4100],['ATL','TPA',5000,3200],['ATL','MCO',6500,4200],['MCO','TPA',4500,3000],['MCO','RSW',4000,2800],['TPA','RSW',4000,2900],['MCO','MIA',6000,4300],['RSW','MIA',3500,2100],
+   ['SEA','SFO',5000,3500],['SFO','LAX',7000,5000],['LAX','PHX',6000,4200],['SEA','DEN',4500,3100],['SFO','DEN',5000,3500],['PHX','DEN',4500,3000],['PHX','DAL',5500,3900],['DEN','KC',6000,4300],['DEN','MSP',4000,2800],['MSP','KC',4000,2800],['MSP','CHI',6000,4300],['KC','CHI',6500,4600],['KC','DAL',6000,4200],['DAL','HOU',6500,4600],['DAL','ATL',6500,4600],['HOU','BHM',5500,3800],['KC','BNA',5500,3800],['CHI','BNA',6000,4300],['CHI','NYC',7000,5000],['NYC','BOS',6000,4200],['NYC','CLT',6500,4600],['NYC','ATL',5500,3800]],
   SC:{
    ian:{name:'Hurricane Ian replay',note:'Approximate, illustrative conditions modeled on the 2022 Florida landfall. Not an official record.',wx:{RSW:{gust:150,rain:25},TPA:{gust:90,rain:15},MCO:{gust:80,rain:12},MIA:{gust:35,rain:6},JAX:{gust:45,rain:5},SAV:{gust:25,rain:1},ATL:{gust:15,rain:0},CLT:{gust:10,rain:0},BNA:{gust:10,rain:0},BHM:{gust:10,rain:0}}},
    rain:{name:'Heavy rain day',note:'Illustrative: steady heavy rain across central and south Florida, little wind.',wx:{MCO:{gust:25,rain:14},TPA:{gust:20,rain:12},MIA:{gust:22,rain:16},RSW:{gust:20,rain:10},JAX:{gust:15,rain:8},ATL:{gust:10,rain:6},SAV:{gust:12,rain:6},CLT:{gust:8,rain:2},BNA:{gust:8,rain:1},BHM:{gust:8,rain:2}}},
-   wind:{name:'Heavy wind front',note:'Illustrative: strong gusts from a cold front across Georgia, the Carolinas and Alabama.',wx:{ATL:{gust:65,rain:1},CLT:{gust:70,rain:1},BHM:{gust:60,rain:0},BNA:{gust:55,rain:0},SAV:{gust:62,rain:0},JAX:{gust:58,rain:0},MCO:{gust:45,rain:0},TPA:{gust:40,rain:0},RSW:{gust:30,rain:0},MIA:{gust:25,rain:0}}}}},
- de:{name:'Germany',hint:'Start with the snowstorm. "Live now" shows today\'s real weather (Open-Meteo), which is often calm.',
+   wind:{name:'Wind front (Southeast)',note:'Illustrative: strong gusts from a cold front across Georgia, the Carolinas and Alabama.',wx:{ATL:{gust:65,rain:1},CLT:{gust:70,rain:1},BHM:{gust:60,rain:0},BNA:{gust:55,rain:0},SAV:{gust:62,rain:0},JAX:{gust:58,rain:0},MCO:{gust:45,rain:0},TPA:{gust:40,rain:0},RSW:{gust:30,rain:0},MIA:{gust:25,rain:0}}},
+   blizzard:{name:'Midwest blizzard',note:'Illustrative: heavy snow and strong wind across Minnesota, Chicago, Kansas City and the Rockies.',wx:{MSP:{gust:55,rain:1,snow:5},CHI:{gust:50,rain:1,snow:4.5},KC:{gust:45,rain:0,snow:3},DEN:{gust:40,rain:0,snow:2.5},NYC:{gust:30,rain:1,snow:1}}},
+   west:{name:'West Coast atmospheric river',note:'Illustrative: heavy rain and wind along the Pacific coast.',wx:{SEA:{gust:45,rain:12},SFO:{gust:50,rain:18},LAX:{gust:30,rain:10},PHX:{gust:15,rain:2}}},
+   plains:{name:'Southern Plains wind event',note:'Illustrative: severe wind across Texas, Kansas and Colorado.',wx:{DAL:{gust:65,rain:3},KC:{gust:70,rain:2},DEN:{gust:60,rain:0},MSP:{gust:55,rain:0},HOU:{gust:45,rain:4},CHI:{gust:50,rain:1}}}}},
+ de:{name:'Germany',vb:'0 0 700 560',hint:'Start with the snowstorm. "Live now" shows today\'s real weather (Open-Meteo), which is often calm.',
   P:{HAM:[330,60],BER:[570,110],HAN:[330,160],LEJ:[520,240],CGN:[140,260],FRA:[300,340],NUE:[480,410],STR:[300,470],MUC:[470,525]},
   NM:{HAM:'Hamburg',BER:'Berlin',HAN:'Hannover',LEJ:'Leipzig',CGN:'Cologne',FRA:'Frankfurt',NUE:'Nuremberg',STR:'Stuttgart',MUC:'Munich'},
   C:{HAM:[53.55,10.0],BER:[52.52,13.4],HAN:[52.37,9.73],LEJ:[51.34,12.37],CGN:[50.94,6.96],FRA:[50.11,8.68],NUE:[49.45,11.08],STR:[48.78,9.18],MUC:[48.14,11.58]},
@@ -26,10 +31,11 @@ const cutOf=w=>Math.max(cl((w.gust-35)/55),.5*cl((w.rain-2)/18),.6*cl(((w.snow||
 // Min-cost rerouting: for each damaged lane (largest shortfall first), repeatedly find the cheapest path
 // (Bellman-Ford) through lanes that still have spare capacity and push as much as the bottleneck allows.
 // Lanes are handled one at a time, so this is a greedy approximation of the full multi-flow optimum.
+const km=(Rg,a,b)=>{const[la1,lo1]=Rg.C[a],[la2,lo2]=Rg.C[b];return Math.hypot((lo1-lo2)*Math.cos((la1+la2)*Math.PI/360),la1-la2)*111};
 function reroute(Rg,lanes){
  const ids=Object.keys(Rg.P),cap={},plans=[];let total=0,cost=0;
  lanes.forEach(l=>cap[l.key]=l.spare);
- const E=lanes.map(l=>({...l,w:Math.hypot(Rg.P[l.a][0]-Rg.P[l.b][0],Rg.P[l.a][1]-Rg.P[l.b][1])/100*.4+.2}));
+ const E=lanes.map(l=>({...l,w:km(Rg,l.a,l.b)/400*.5+.2}));
  for(const d of lanes.filter(l=>l.over>0).sort((x,y)=>y.over-x.over)){
   let need=d.over;
   for(let guard=0;need>.5&&guard<20;guard++){
@@ -75,7 +81,7 @@ function LiveBox({live,Rg,us,gap}){
   <b>Live weather right now: {lvl}</b>
   <div className="note" style={{color:'var(--ink)'}}>{hit.length?`Weather is cutting capacity at: ${hit.map(i=>N[i]).join(', ')}.${gap>0?'':' Today\'s volume still fits, so no action is needed yet.'}`:`No hub is hit hard enough to lose capacity. The windiest hub is ${N[gid]} at ${Math.round(g)} mph gusts (capacity only starts dropping above 35 mph). The wettest is ${N[rid]} at ${rn.toFixed(1)} mm of rain per hour (heavy rain starts at about 2).`}</div>
   <div className="note" style={{color:'var(--ink)',marginTop:6}}><b>Network impact:</b> {gap>0?'Yes. Look at the map and the numbers below.':hit.length||sev.length?'Capacity is reduced but nothing overflows yet. See the early warning below.':'None. The network runs normally, so overflow is 0.'}</div>
-  {us?<><div className="note" style={{marginTop:6}}><b>Official alerts in Florida</b> (National Weather Service, as of {new Date(live.fetchedAt).toLocaleTimeString()}):</div>
+  {us?<><div className="note" style={{marginTop:6}}><b>Official US alerts (Florida only)</b> (National Weather Service, as of {new Date(live.fetchedAt).toLocaleTimeString()}):</div>
   {live.alerts.length?<ul className="why">{live.alerts.map(a=><li key={a.event}><b>{a.event}{a.count>1?' (x'+a.count+')':''}:</b> {MEANING[a.event]||'See weather.gov for details.'} <i>{SEVERE.test(a.event)?'Could disrupt lanes.':'Not a trucking threat.'}</i></li>)}</ul>:<div className="note">No active alerts.</div>}
   <div className="note">Alerts are shown for context. The model uses weather readings only.</div></>:<div className="note" style={{marginTop:6}}>Conditions from Open-Meteo as of {new Date(live.fetchedAt).toLocaleTimeString()}. Official German weather alerts are not included.</div>}
  </div>);
@@ -104,8 +110,10 @@ export default function Home(){
  const [sel,setSel]=useState({div:false,cap:false,pri:false,prm:false}),[ex,setEx]=useState(null),[rec,setRec]=useState(null);
  const Rg=R[rg],live=liveD[rg];
  useEffect(()=>{if(sid!=='live'||liveD[rg])return;const set=v=>setLiveD(d=>({...d,[rg]:v})),fail=()=>set({error:'Live weather is unavailable right now.'});
-  if(rg==='us')fetch('/api/weather').then(r=>r.json()).then(set).catch(fail);
-  else{const ids=Object.keys(Rg.C);fetch(`https://api.open-meteo.com/v1/forecast?latitude=${ids.map(i=>Rg.C[i][0]).join(',')}&longitude=${ids.map(i=>Rg.C[i][1]).join(',')}&current=wind_gusts_10m,precipitation,snowfall&wind_speed_unit=mph`).then(r=>r.json()).then(j=>{const a=Array.isArray(j)?j:[j],nodes={};ids.forEach((id,i)=>{const c=a[i]?.current||{};nodes[id]={gust:c.wind_gusts_10m??0,rain:c.precipitation??0,snow:c.snowfall??0}});set({nodes,alerts:[],fetchedAt:new Date().toISOString()})}).catch(fail)}
+  const ids=Object.keys(Rg.C);
+  const om=fetch(`https://api.open-meteo.com/v1/forecast?latitude=${ids.map(i=>Rg.C[i][0]).join(',')}&longitude=${ids.map(i=>Rg.C[i][1]).join(',')}&current=wind_gusts_10m,precipitation,snowfall&wind_speed_unit=mph`).then(r=>r.json());
+  const al=rg==='us'?fetch('/api/weather').then(r=>r.json()).then(j=>j.alerts||[]).catch(()=>[]):Promise.resolve([]);
+  Promise.all([om,al]).then(([j,alerts])=>{if(!Array.isArray(j)&&j.error)throw 0;const a=Array.isArray(j)?j:[j],nodes={};ids.forEach((id,i)=>{const c=a[i]?.current||{};nodes[id]={gust:c.wind_gusts_10m??0,rain:c.precipitation??0,snow:c.snowfall??0}});set({nodes,alerts,fetchedAt:new Date().toISOString()})}).catch(fail);
  },[sid,rg,liveD,Rg]);
  useEffect(()=>setEx(null),[sid,rg,k,sel]);
  useEffect(()=>setRec(null),[sid,rg,k]);
@@ -120,7 +128,7 @@ export default function Home(){
  const facts={region:Rg.name,scenario:sid==='live'?'Live conditions':Rg.SC[sid].name,intensityPercent:k,overCapacityPerDay:Math.round(r.gap),stillLate:Math.round(r.late),promisesReset:Math.round(r.prm),planCostPerDay:Math.round(r.cost),responsesChosen:chosen,worstLanes:w.map(l=>`${N[l.a]} to ${N[l.b]}: capacity ${Math.round(l.c)} to ${Math.round(l.eff)}, volume ${l.v}, short ${Math.round(l.over)}`),reroutes:r.sol.plans.slice(0,3).map(p=>`${N[p.from]} to ${N[p.to]} via ${p.via.map(i=>N[i]).join(' and ')}: ${Math.round(p.units)} packages at $${p.unit.toFixed(2)} each`)};
  const template=()=>!facts.overCapacityPerDay?`Under "${facts.scenario}", every lane stays within capacity, so no packages are at risk.`:`Under "${facts.scenario}", about ${f(facts.overCapacityPerDay)} packages a day no longer fit on damaged lanes, mainly ${facts.worstLanes.slice(0,2).map(s=>s.split(':')[0]).join(' and ')}. ${chosen.length?`Your plan (${chosen.join(', ').toLowerCase()}) leaves ${f(facts.stillLate)} late and resets promises on ${f(facts.promisesReset)}, at $${f(facts.planCostPerDay)} per day.`:'You have not chosen a response yet, so all of them would be late.'} ${sel.prm?'Resetting promises is cheap but spends customer trust.':facts.stillLate>0?'No option here is free: you trade cost against late packages and customer trust.':'Everything is protected, but check what that costs.'} This is a simulation with invented data.`;
  const explain=async()=>{setEx({loading:true});try{const res=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(facts)});const j=await res.json();if(res.ok&&j.text)return setEx({text:j.text,source:'Gemini AI'});throw 0}catch(e){setEx({text:template(),source:'Template (Gemini not available)'})}};
- const calm=!r.gap,anyCut=Object.values(cuts).some(v=>v>0);
+ const nd=sid==='live'?'no data':'calm',calm=!r.gap,anyCut=Object.values(cuts).some(v=>v>0);
  let worse=null;if(calm&&anyCut)for(let x=1.1;x<=3.01;x+=.1){if(calc(Rg,scale(cuts,x),{}).gap>0){worse=x;break}}
  const sx=worse?Math.min(3,worse+.5):null,st=sx?recPlan(Rg,scale(cuts,sx)):null,stCost=st&&st.r0.gap>0?calc(Rg,scale(cuts,sx),st.sel).cost:0;
  const tight=[...r.lanes].sort((a,b)=>b.v/b.eff-a.v/a.eff).slice(0,3);
@@ -130,19 +138,19 @@ export default function Home(){
   <p className="sub">When bad weather closes lanes, which packages miss their promise, and what should the planner do? Simulated transportation network with weather scenarios.</p>
   <section className="card warnbox"><b>Synthetic data.</b> The networks (hubs, lanes, volumes, costs) are invented for this demo and are not Amazon data. Weather scenarios are illustrative approximations; "Live now" uses real current conditions. The model is rule-based, not machine learning.</section>
   <section className="card steps"><h2>You are a network planner. Weather is hitting the network.</h2><ol>
-   <li><b>Pick a region and scenario</b> and watch lines turn red where lanes can no longer carry the volume.</li>
+   <li><b>Pick a country and scenario</b> and watch lines turn red where lanes can no longer carry the volume.</li>
    <li><b>Read the damage:</b> "Still late" is how many packages per day will miss their promised date.</li>
    <li><b>Click responses</b> and watch late fall while cost rises. You are trading cost against customer trust.</li>
    <li><b>Press "Explain this plan"</b> for a plain-language summary, then check the 14-day forecast below.</li></ol></section>
   <div className="grid">
    <section className="card"><h2>Network: {Rg.name}, lane load under weather</h2>
-    <svg viewBox="0 0 700 560" role="img" aria-label="Map of hubs and lanes colored by utilization">
+    <svg viewBox={Rg.vb} role="img" aria-label="Map of hubs and lanes colored by utilization">
      {r.lanes.map(l=>{const[x1,y1]=Rg.P[l.a],[x2,y2]=Rg.P[l.b];return <line key={l.key} x1={x1} y1={y1} x2={x2} y2={y2} strokeLinecap="round" strokeWidth={l.c/1400+1} style={{stroke:col(l.v/Math.max(1,l.eff))}}><title>{N[l.a]} to {N[l.b]}: {f(l.v)} packages vs {f(l.eff)} capacity</title></line>})}
-     {Object.entries(Rg.P).map(([id,[x,y]])=>{const c=cuts[id];return <g key={id}><circle cx={x} cy={y} r="9" strokeWidth="3" style={{fill:'var(--panel)',stroke:c>.5?'var(--bad)':c>.15?'var(--warn)':'var(--ok)'}}/><text className="lbl" x={x+14} y={y+4}>{N[id]}</text></g>})}
+     {Object.entries(Rg.P).map(([id,[x,y]])=>{const c=cuts[id];return <g key={id}><circle cx={x} cy={y} r="9" strokeWidth="3" style={{fill:'var(--panel)',stroke:c>.5?'var(--bad)':c>.15?'var(--warn)':'var(--ok)'}}/><text className="lbl" x={x+14} y={y+4} style={Rg.vb==="0 0 900 600"?{fontSize:14}:undefined}>{N[id]}</text></g>})}
     </svg>
     <div className="legend">Teal: under 85% of remaining capacity. Amber: 85-100%. Red: over capacity. Line width: original capacity.</div></section>
-   <section className="card"><h2>1. Region and weather</h2>
-    <div className="row">{[['us','Southeast US'],['de','Germany']].map(([id,n])=><button key={id} className="chip" aria-pressed={rg===id} onClick={()=>pick(id)}>{n}</button>)}</div>
+   <section className="card"><h2>1. Country and weather</h2>
+    <label className="note">Country: <select value={rg} onChange={e=>pick(e.target.value)} style={{font:'inherit',marginLeft:4,marginBottom:8}}><option value="us">United States</option><option value="de">Germany</option></select></label>
     <p className="note" style={hint}>{Rg.hint}</p>
     <div className="row">{[...Object.entries(Rg.SC).map(([id,s])=>[id,s.name]),['live','Live now']].map(([id,n])=><button key={id} className="chip" aria-pressed={sid===id} onClick={()=>setSid(id)}>{n}</button>)}</div>
     {sid==='live'?<LiveBox live={live} Rg={Rg} us={rg==='us'} gap={r.gap}/>:<p className="note">{Rg.SC[sid].note}</p>}
@@ -169,7 +177,7 @@ export default function Home(){
   </div>
   <Forecast Rg={Rg} lanes={r.lanes}/>
   <section className="card"><h2>Weather at each hub</h2>
-   {wx?<table><thead><tr><th>Hub</th><th>Gust (mph)</th><th>Rain (mm/h)</th>{rg==='de'&&<th>Snow (cm/h)</th>}<th>Capacity cut</th></tr></thead><tbody>{Object.keys(Rg.P).map(id=><tr key={id}><td>{N[id]}</td><td>{wx[id]?Math.round(wx[id].gust):'no data'}</td><td>{wx[id]?(+wx[id].rain).toFixed(1):'no data'}</td>{rg==='de'&&<td>{wx[id]?(+(wx[id].snow||0)).toFixed(1):'no data'}</td>}<td>{Math.round(cuts[id]*100)}%</td></tr>)}</tbody></table>:<p className="note">No weather data loaded.</p>}
+   {wx?<table><thead><tr><th>Hub</th><th>Gust (mph)</th><th>Rain (mm/h)</th><th>Snow (cm/h)</th><th>Capacity cut</th></tr></thead><tbody>{Object.keys(Rg.P).map(id=><tr key={id}><td>{N[id]}</td><td>{wx[id]?Math.round(wx[id].gust):nd}</td><td>{wx[id]?(+wx[id].rain).toFixed(1):nd}</td><td>{wx[id]?(+(wx[id].snow||0)).toFixed(1):nd}</td><td>{Math.round(cuts[id]*100)}%</td></tr>)}</tbody></table>:<p className="note">No weather data loaded.</p>}
    <p className="note">Rule: gusts above 35 mph start cutting a hub's capacity (full cut at 90 mph). Heavy rain cuts up to 50% and heavy snow up to 60%. A lane loses capacity based on its worse end.</p></section>
  </main>);
 }
