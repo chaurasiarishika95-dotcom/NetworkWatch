@@ -1,21 +1,3 @@
-// Save as app/api/explain/route.js. Needs GEMINI_API_KEY in Vercel environment variables.
 export const dynamic='force-dynamic';
-const hits=new Map();
-export async function POST(req){
- const ip=(req.headers.get('x-forwarded-for')||'x').split(',')[0],now=Date.now();
- const recent=(hits.get(ip)||[]).filter(t=>now-t<3600000);
- if(recent.length>=10)return Response.json({error:'Too many requests'},{status:429});
- recent.push(now);hits.set(ip,recent);
- const key=process.env.GEMINI_API_KEY;
- if(!key)return Response.json({error:'No key'},{status:503});
- try{
-  const facts=JSON.stringify(await req.json()).slice(0,2500);
-  const prompt=`You help a transportation network planner. Using ONLY the numbers in the JSON below, write 4 short plain-language sentences: what happened, what the chosen responses do, what they cost, and what the planner gives up. Do not invent any numbers. Mention this is a simulation with invented data.\n${facts}`;
-  const model=process.env.GEMINI_MODEL||'gemini-3.5-flash';
-  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
-  if(!r.ok)throw new Error('gemini');
-  const j=await r.json(),text=(j.candidates?.[0]?.content?.parts||[]).map(p=>p.text).join('').trim();
-  if(!text)throw new Error('empty');
-  return Response.json({text});
- }catch(e){return Response.json({error:'Explain failed'},{status:502})}
-}
+export async function POST(req){try{const body=await req.json();const key=process.env.GEMINI_API_KEY;const facts={question:String(body.question||'Summarise this scenario'),scenario:body.scenario,description:body.description,affectedLanes:body.plan?.affectedLanes,capacityLost:body.plan?.capacityLost,estimatedOverflow:body.plan?.atRisk,plans:(body.plan?.plans||[]).slice(0,8).map(p=>({lane:p.lane,overflow:p.overflow,alternative:p.alternative,alternativeHours:p.alternativeHours,extraCost:p.extraCost,status:p.status})),weatherSource:body.weather?.source,weatherNote:body.weather?.note};if(!key){return Response.json({text:`${facts.scenario}: ${facts.description} The model flags ${facts.affectedLanes||0} affected lanes and estimates ${Math.round(facts.capacityLost||0).toLocaleString('en-IN')} parcels/day of lane capacity removed. Estimated exposure is ${Math.round(facts.estimatedOverflow||0).toLocaleString('en-IN')} parcels/day under synthetic assumptions. Treat alternate paths and cost estimates as candidates for review; verify road conditions, capacity and actual shipment commitments before approving a plan.`});}
+const prompt=`You are an operations copilot for a logistics simulation in North India. Answer the user's question using ONLY the supplied JSON. Clearly state that the network, volumes, capacities and costs are synthetic. Weather readings are not proof of road closures. Do not invent metrics or claim the route plan is globally optimal. Be concise and actionable. JSON: ${JSON.stringify({question:facts.question,facts}).slice(0,6500)}`;const model=process.env.GEMINI_MODEL||'gemini-2.5-flash';const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({contents:[{parts:[{text:prompt}]}]}),signal:AbortSignal.timeout(15000)});if(!r.ok)throw new Error('Gemini request failed');const j=await r.json();const text=(j.candidates?.[0]?.content?.parts||[]).map(p=>p.text).join('').trim();if(!text)throw new Error('Empty response');return Response.json({text,source:'Gemini',synthetic:true});}catch{return Response.json({error:'AI copilot request failed. Check GEMINI_API_KEY and GEMINI_MODEL.'},{status:502});}}
