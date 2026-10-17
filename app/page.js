@@ -4,7 +4,38 @@ import {HUBS,LANES,SCENARIOS,buildPlan,findPath,haversineKm} from '../lib/networ
 const fmt=n=>Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:0});
 export default function Home(){
  const [scenario,setScenario]=useState('monsoon');const [plan,setPlan]=useState(()=>buildPlan('monsoon'));const [weather,setWeather]=useState(null);const [weatherStatus,setWeatherStatus]=useState('Loading live weather…');const [origin,setOrigin]=useState('DEL');const [destination,setDestination]=useState('JAI');const [question,setQuestion]=useState('');const [answer,setAnswer]=useState('');const [saving,setSaving]=useState(false);const [saveMsg,setSaveMsg]=useState('');const [history,setHistory]=useState([]);const [roadRoute,setRoadRoute]=useState(null);const [roadLoading,setRoadLoading]=useState(false);
- useEffect(()=>{fetch('/api/weather').then(r=>r.json()).then(j=>{setWeather(j);setWeatherStatus(j.source==='open-meteo'?'Live Open-Meteo readings loaded':'Weather unavailable; use the labelled simulated scenarios')}).catch(()=>setWeatherStatus('Weather unavailable; use simulated scenarios'));},[]);
+
+useEffect(() => {
+  fetch('/api/weather')
+    .then(async response => {
+      if (!response.ok) throw new Error('Weather request failed');
+      return response.json();
+    })
+    .then(data => {
+      setWeather(data);
+
+      if (data.source === 'open-meteo') {
+        setWeatherStatus('Live Open-Meteo readings loaded');
+      } else {
+        setWeatherStatus('Weather unavailable; using simulated scenarios');
+      }
+    })
+    .catch(() => {
+      setWeather(null);
+      setWeatherStatus('Weather unavailable; using simulated scenarios');
+    });
+}, []);
+
+useEffect(() => {
+  const hasLiveWeather =
+    weather?.source === 'open-meteo' ||
+    weather?.source === 'open-meteo-partial';
+
+  const readings = hasLiveWeather ? weather.readings : null;
+
+  setPlan(buildPlan(scenario, readings));
+}, [scenario, weather]);
+
  useEffect(()=>{fetch('/api/scenarios').then(r=>r.json()).then(j=>{if(j.scenarios)setHistory(j.scenarios)}).catch(()=>{});},[]);
  const selected=SCENARIOS[scenario];const laneByKey=useMemo(()=>Object.fromEntries(plan.lanes.map(l=>[l.key,l])),[plan]);
  const chosenPath=useMemo(()=>findPath(origin,destination,plan.lanes),[origin,destination,plan]);
@@ -29,7 +60,11 @@ export default function Home(){
   loadPath();return()=>{active=false};
  },[chosenPath,origin]);
  const roadLine=useMemo(()=>{const pts=roadRoute?.coordinates;if(!pts?.length)return '';const lons=pts.map(p=>p[0]),lats=pts.map(p=>p[1]);const minLon=Math.min(...lons),maxLon=Math.max(...lons),minLat=Math.min(...lats),maxLat=Math.max(...lats);const dx=maxLon-minLon||1,dy=maxLat-minLat||1;return pts.map(([lon,lat])=>`${12+(lon-minLon)/dx*576},${188-(lat-minLat)/dy*160}`).join(' ')},[roadRoute]);
- function chooseScenario(id){setScenario(id);setPlan(buildPlan(id));setAnswer('');setSaveMsg('');}
+ function chooseScenario(id) {
+  setScenario(id);
+  setAnswer('');
+  setSaveMsg('');
+}
  async function saveScenario(){setSaving(true);setSaveMsg('Saving…');try{const r=await fetch('/api/scenarios',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario,plan,question:question||null})});const j=await r.json();if(!r.ok)throw new Error(j.error||'Save failed');setSaveMsg(j.persisted?'Saved to Supabase.':'Saved for this session only. Add Supabase environment variables to persist it.');if(j.scenarios)setHistory(j.scenarios);}catch(e){setSaveMsg('Could not save scenario: '+e.message)}finally{setSaving(false)}}
  async function askCopilot(){if(!question.trim())return;setAnswer('Thinking…');try{const r=await fetch('/api/explain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,scenario:selected.name,description:selected.description,plan,weather})});const j=await r.json();setAnswer(j.text||j.error||'No response.');}catch{setAnswer('Copilot is unavailable. Review the route and impact data shown on this page.');}}
  const totalCapacity=LANES.reduce((s,l)=>s+l.capacity,0);const impacted=plan.plans.filter(p=>p.overflow>0);
