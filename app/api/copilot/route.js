@@ -2,6 +2,7 @@
 // every number comes from the Network Watch engine via tools. Falls back to rule-based answers without a key.
 import { rebuild, TOOL_DECLS, runTool, ruleAnswer } from '../../../lib/copilot.js';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 30;
 
 const hits = new Map();
 const SYSTEM = `You are the operations copilot inside Network Watch, a decision-support prototype for a North India parcel network.
@@ -32,13 +33,15 @@ export async function POST(req) {
   const history = (Array.isArray(body.history) ? body.history : []).slice(-6).map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.text || '').slice(0, 1500) }] }));
   const contents = [...history, { role: 'user', parts: [{ text: question }] }];
   const evidence = [], tools = []; let proposal = null;
-  let model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const NM = ctxAll.Rg.NM, ra = ctxAll.ra;
+  const viewLine = ra ? `The manager is looking at the shipment ${NM[ra.from]} → ${NM[ra.to]} (${Math.round(ra.shipVol)} parcels/day, planned route ${ra.planned.hubs.map(h => NM[h]).join(' → ')}). Answer for this shipment unless the question names other hubs; compare_recovery_plans, evaluate_plan and propose_intervention already work on this shipment.` : 'The manager is looking at the whole network.';
+  let model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
   try {
     for (let round = 0; round < 6; round++) {
-      const payload = { systemInstruction: { parts: [{ text: SYSTEM }] }, contents, tools: [{ functionDeclarations: TOOL_DECLS }], generationConfig: { temperature: 0.2 } };
+      const payload = { systemInstruction: { parts: [{ text: SYSTEM + '\n' + viewLine }] }, contents, tools: [{ functionDeclarations: TOOL_DECLS }], generationConfig: { temperature: 0.2 } };
       let r = await gemini(key, model, payload);
-      if (r.status === 404 && model !== 'gemini-2.5-flash') { model = 'gemini-2.5-flash'; r = await gemini(key, model, payload); }
-      if (!r.ok) throw new Error('gemini ' + r.status);
+      if (!r.ok && r.status !== 429 && model !== 'gemini-3.5-flash') { model = 'gemini-3.5-flash'; r = await gemini(key, model, payload); }
+      if (!r.ok) { const err = await r.json().catch(() => ({})); throw new Error(`Gemini ${model} returned ${r.status}${err?.error?.message ? ': ' + String(err.error.message).slice(0, 160) : ''}`); }
       const j = await r.json(), content = j.candidates?.[0]?.content;
       if (!content?.parts?.length) throw new Error('empty');
       const calls = content.parts.filter(p => p.functionCall);
@@ -58,6 +61,6 @@ export async function POST(req) {
     }
     throw new Error('too many rounds');
   } catch (e) {
-    return Response.json({ ...ruleAnswer(ctxAll, question), mode: 'rules', note: 'Gemini was unavailable, so a rule-based answer was generated from the same calculations.' });
+    return Response.json({ ...ruleAnswer(ctxAll, question), mode: 'rules', note: `Gemini was unavailable (${String(e.message).slice(0, 200)}), so a rule-based answer was generated from the same calculations.` });
   }
 }
