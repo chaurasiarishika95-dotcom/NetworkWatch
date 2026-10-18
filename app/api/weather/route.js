@@ -1,9 +1,22 @@
 import { HUBS } from '../../../lib/network';
+import { persistObservations } from '../../../lib/supabase-observations';
 
 export const dynamic = 'force-dynamic';
 
 const CURRENT_FIELDS = 'temperature_2m,precipitation,wind_speed_10m,wind_gusts_10m';
 const WEATHER_BASE = 'https://api.open-meteo.com/v1/forecast';
+
+function observedAtIso(value, fallback) {
+  if (!value) return fallback;
+  // Open-Meteo returns local hub time without an offset when timezone is set.
+  // The hubs use Asia/Kolkata (UTC+05:30), so preserve that in Supabase timestamps.
+  const text = String(value);
+  const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text)
+    ? text
+    : `${text.length === 16 ? `${text}:00` : text}+05:30`;
+  const date = new Date(zoned);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
+}
 
 function toReading(current) {
   if (!current) return null;
@@ -82,6 +95,16 @@ export async function GET() {
   }
 
   const successfulHubs = Object.keys(readings).length;
+  const fetchedAt = new Date().toISOString();
+  const observationRows = Object.entries(readings).map(([hubId, reading]) => ({
+    kind: 'weather',
+    entity_key: hubId,
+    source: 'Open-Meteo',
+    observed_at: observedAtIso(reading.time, fetchedAt),
+    is_live: true,
+    data: { hubId, ...reading, latitude: HUBS[hubId]?.lat, longitude: HUBS[hubId]?.lon },
+  }));
+  const persistence = await persistObservations(observationRows);
   const source = successfulHubs === hubs.length
     ? 'open-meteo'
     : successfulHubs > 0
@@ -94,7 +117,8 @@ export async function GET() {
     successfulHubs,
     totalHubs: hubs.length,
     failedHubs: hubs.filter(hub => !readings[hub.id]).map(hub => hub.id),
-    fetchedAt: new Date().toISOString(),
+    fetchedAt,
+    observationsPersisted: persistence.persisted,
     note: successfulHubs
       ? 'Weather is current Open-Meteo context for hub coordinates; it does not confirm road closures or unsafe roads.'
       : 'Live weather unavailable. Simulated scenarios remain usable.',
