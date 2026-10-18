@@ -40,15 +40,25 @@ export async function POST(request) {
       return Response.json({ error: 'scenario and plan are required' }, { status: 400 });
     }
 
+    const rc = body.routeContext || null;
+    const journeyLabel = rc?.originName && rc?.destinationName
+      ? `${rc.originName} → ${rc.destinationName}`
+      : null;
+    const pathLabel = Array.isArray(rc?.selectedPath) ? rc.selectedPath.join(' → ') : null;
+    const scenarioLabel = body.plan.scenarioName || body.scenario;
     const row = {
-      scenario_name: body.plan.scenarioName || body.scenario,
-      summary: `${body.plan.affectedLanes || 0} affected lanes · ${Math.round(body.plan.capacityLost || 0)} parcels/day capacity removed · synthetic scenario`,
+      scenario_name: journeyLabel ? `${journeyLabel} · ${scenarioLabel}` : scenarioLabel,
+      summary: journeyLabel
+        ? `${pathLabel || journeyLabel}${rc.roadDurationMinutes != null ? ` · ${Math.floor(rc.roadDurationMinutes / 60)}h ${rc.roadDurationMinutes % 60}m` : ''}${rc.roadDistanceKm != null ? ` · ${rc.roadDistanceKm} km` : ''} · ${rc.routeStatus || 'journey'} · North India prototype` 
+        : `${body.plan.affectedLanes || 0} modelled affected lanes · ${Math.round(body.plan.capacityLost || 0)} parcels/day modelled capacity removed · scenario`,
       scenario_key: body.scenario,
       payload: {
         plan: body.plan,
         question: body.question || null,
         weather: body.weather || null,
-        routeContext: body.routeContext || null,
+        routeContext: rc,
+        recoveryPlan: body.recoveryPlan || null,
+        operationalData: body.operationalData || null,
       },
     };
 
