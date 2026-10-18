@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { US_REGION_LABELS, projectIN } from '../lib/regions';
-import { getRegion, buildContext, analyse, comparePlans, allocate, routeWithAlternative, routeRisks, planFacts, cutOf, ACTION_LABEL } from '../lib/engine';
+import { getRegion, buildContext, analyse, analyseRoute, comparePlans, allocate, routeRisks, planFacts, cutOf, ACTION_LABEL } from '../lib/engine';
 
 // ALL NETWORK AND ORDER DATA IS SAMPLE DATA (invented for this demo) unless real operational data is loaded from Supabase.
 // Saved scenarios are illustrative approximations, not official records.
@@ -63,7 +63,8 @@ export default function Home() {
   const [rg, setRg] = useState('in'), [usRegion, setUsRegion] = useState('all'), [sid, setSid] = useState('agra'), [liveD, setLiveD] = useState({}), [k, setK] = useState(100);
   const [sel, setSel] = useState(NONE), [ex, setEx] = useState(null), [rec, setRec] = useState(null);
   const [data, setData] = useState(null), [traffic, setTraffic] = useState(null), [useTraffic, setUseTraffic] = useState(true), [od, setOd] = useState(null);
-  const [from, setFrom] = useState('JAI'), [to, setTo] = useState('DEL'), [settings, setSettings] = useState({ windowH: 12, slackH: 6 });
+  const [from, setFrom] = useState('DEL'), [to, setTo] = useState('LKO'), [settings, setSettings] = useState({ windowH: 12, slackH: 6 });
+  const [scope, setScope] = useState('route'), [shipVol, setShipVol] = useState(1000);
   const [chat, setChat] = useState([]), [q, setQ] = useState(''), [asking, setAsking] = useState(false), [proposal, setProposal] = useState(null);
   const [decisions, setDecisions] = useState({ stored: false, items: [] }), [approver, setApprover] = useState(''), [note, setNote] = useState(''), [saving, setSaving] = useState(false), [saveMsg, setSaveMsg] = useState(null);
   const chatEnd = useRef(null);
@@ -74,8 +75,19 @@ export default function Home() {
     fetch('/api/data').then(r => r.json()).then(setData).catch(() => setData({ source: 'sample', reason: 'Data service unavailable, using built-in sample data.' }));
     fetch('/api/decisions').then(r => r.json()).catch(() => ({ stored: false, items: [] })).then(d => setDecisions({ ...d, local: store.get('nw-decisions') || [] }));
   }, []);
-  const loadTraffic = (force) => { setTraffic(t => force ? { ...(t || {}), loading: true } : t); fetch('/api/traffic').then(r => r.json()).then(j => setTraffic({ ...j, loadedAt: new Date().toISOString() })).catch(() => setTraffic({ live: false, reason: 'Traffic service unavailable. Travel times are estimated.' })); };
-  useEffect(() => { if (india && !traffic) loadTraffic(); }, [india]);
+  // Live traffic: the selected route's legs first, then every lane. TomTom rate-limits bursts, so lanes it
+  // skipped are requested again (up to 3 rounds). Results are merged, so the page never loses lanes it has.
+  const trafficRun = useRef(0);
+  const loadTraffic = async (firstKeys = []) => {
+    const run = ++trafficRun.current;
+    setTraffic(t => ({ ...(t || {}), loading: true }));
+    const merge = j => setTraffic(t => j.live ? { ...j, lanes: { ...((t && t.lanes) || {}), ...j.lanes }, loading: true } : (t?.live ? t : { ...j, loading: true }));
+    const get = async q => { try { const j = await (await fetch('/api/traffic' + q)).json(); if (run === trafficRun.current) merge(j); return j; } catch { return { live: false, reason: 'Traffic service unavailable. Travel times are estimated.' }; } };
+    if (firstKeys.length) await get('?lanes=' + firstKeys.join(','));
+    let j = await get('');
+    for (let round = 0; round < 3 && j.live && j.failed?.length && run === trafficRun.current; round++) { await new Promise(r => setTimeout(r, 1500)); j = await get('?lanes=' + j.failed.join(',')); }
+    if (run === trafficRun.current) setTraffic(t => ({ ...(t || j), loading: false, failed: j.failed || [], ...(t?.live ? {} : { live: !!j.live, reason: j.reason }) }));
+  };
 
   const overrides = india && data?.source === 'supabase' ? data.overrides : null;
   const Rg = useMemo(() => getRegion(rg, { usRegion, overrides }), [rg, usRegion, overrides]);
@@ -92,7 +104,7 @@ export default function Home() {
   useEffect(() => { if (india && from && to) { setOd(null); fetch(`/api/traffic?from=${from}&to=${to}`).then(r => r.json()).then(setOd).catch(() => setOd(null)); } }, [india, from, to]);
   useEffect(() => setEx(null), [sid, rg, k, sel]);
   useEffect(() => setRec(null), [sid, rg, k]);
-  useEffect(() => { chatEnd.current?.scrollIntoView({ block: 'nearest' }); }, [chat]);
+  useEffect(() => { const box = chatEnd.current?.parentElement; if (chat.length && box) box.scrollTop = box.scrollHeight; }, [chat]); // scroll the chat box only, never the page
 
   const scenario = sid === 'live' ? null : Rg.SC[sid];
   const wx = sid === 'live' ? live?.nodes : scenario?.wx;
@@ -103,27 +115,34 @@ export default function Home() {
   const baseOrders = useMemo(() => buildContext(Rg, {}).orders, [Rg]);
   const mergedOrders = orders ? { ...baseOrders, ...orders } : baseOrders;
   const an = useMemo(() => analyse(Rg, buildContext(Rg, { ...ctxArgs, intensity, orders: mergedOrders, sel })), [Rg, wx, scenario, intensity, trafficLanes, settings, sel, mergedOrders]);
-  const cmp = useMemo(() => comparePlans(Rg, an), [an]);
-  const plan = an.plan, N = Rg.NM, C = Rg.costs, cur = C.cur, word = india ? 'parcels' : 'packages';
+  // Shipment view: the selected origin -> destination drives Quantify / Optimise / Recommend / copilot.
+  const ra = useMemo(() => india ? analyseRoute(an, from, to, shipVol) : null, [an, from, to, shipVol, india]);
+  const routeView = india && scope === 'route' && !!ra;
+  const V = routeView ? ra : an;
+  const cmp = useMemo(() => comparePlans(Rg, V), [V]);
+  const plan = V.plan, N = Rg.NM, C = Rg.costs, cur = C.cur, word = india ? 'parcels' : 'packages';
   const f = n => Math.round(n).toLocaleString(india ? 'en-IN' : 'en-US'), money = n => cur + f(n);
-  const nsel = Object.values(sel).filter(Boolean).length, atRisk = an.atRisk, t = Math.max(1, atRisk);
-  const w = an.lanes.filter(l => l.over > 0).sort((a, b) => b.over - a.over).slice(0, 4), uc = an.sol.total ? an.sol.cost / an.sol.total : 0;
-  const route = useMemo(() => india ? routeWithAlternative(an, from, to) : { best: null }, [an, from, to, india]);
+  const nsel = Object.values(sel).filter(Boolean).length, atRisk = V.atRisk, t = Math.max(1, atRisk);
+  const w = V.lanes.filter(l => l.over > 0).sort((a, b) => b.over - a.over).slice(0, 4), uc = V.sol.total ? V.sol.cost / V.sol.total : 0;
+  const route = { best: ra?.planned || null, alts: ra?.alts || [] };
   const risks = route.best ? routeRisks(an, route.best, wx) : [];
+  const legKeys = (route.best?.legs || []).map(x => x.lane.key).join(',');
+  useEffect(() => { if (india) loadTraffic(legKeys ? legKeys.split(',') : []); }, [india]);
+  useEffect(() => { if (india && traffic?.live && legKeys && legKeys.split(',').some(k => !traffic.lanes?.[k]) && !traffic.loading) loadTraffic(legKeys.split(',')); }, [legKeys]);
 
   const tog = key => setSel(s => ({ ...s, [key]: !s[key] }));
   const pick = x => { setRg(x); setSid(x === 'us' ? 'ian' : x === 'de' ? 'snow' : 'agra'); if (x === 'us') setUsRegion('all'); setSel(NONE); setRec(null); setK(100); setProposal(null); };
   const pickUSRegion = x => { const next = getRegion('us', { usRegion: x }), preferred = { all: 'ian', west: 'west', midwest: 'blizzard', northeast: 'blizzard', southeast: 'ian', plains: 'plains' }[x]; setUsRegion(x); setSid(c => c === 'live' ? 'live' : (next.SC[preferred] ? preferred : Object.keys(next.SC)[0] || 'live')); setSel(NONE); setRec(null); setK(100); };
 
   // Option descriptions from the current analysis.
-  const lanePool = C.laneTemp.share * an.items.filter(i => i.kind === 'lane' && i.tempOK).reduce((s, i) => s + i.lost, 0);
+  const lanePool = C.laneTemp.share * V.items.filter(i => i.kind === 'lane' && i.tempOK).reduce((s, i) => s + i.lost, 0);
   const ltUse = plan.timing.laneTemp.usableShare, shUse = plan.timing.shift?.usableShare;
-  const shiftHubs = an.items.filter(i => i.kind === 'hub');
-  const tooSlow = Object.entries(an.sol.byLane).filter(([, v]) => v.tooSlow);
-  const critPct = Math.round(100 * an.items.reduce((s, i) => s + i.amount * i.cs, 0) / Math.max(1, atRisk));
+  const shiftHubs = V.items.filter(i => i.kind === 'hub');
+  const tooSlow = Object.entries(V.sol.byLane).filter(([, v]) => v.tooSlow);
+  const critPct = Math.round(100 * V.items.reduce((s, i) => s + i.amount * i.cs, 0) / Math.max(1, atRisk));
   const desc = {
-    div: `${an.sol.total >= 1 ? `Cheapest detours through lanes${an.hubs.length ? ' and hubs' : ''} that still have room: up to ${f(an.sol.total)} ${word}/day at about ${cur}${uc.toFixed(2)} each.` : `No usable detour right now${an.laneGap > 0 ? ': the lanes around the damaged ones have no spare room' : ': no lane is over capacity'}.`}${atRisk > 0 && an.sol.total >= 1 && an.sol.total < an.gap * .25 ? ' Little room because most nearby lanes are also damaged.' : ''}${tooSlow.length ? ` Detours for ${tooSlow.map(([k]) => k.split('-').map(x => N[x]).join('–')).join(', ')} are too slow to keep the promise.` : ''}`,
-    cap: india ? `Market trucks: ${lanePool < 1 ? 'no damaged lane needs them' : `up to ${f(lanePool * ltUse)} ${word}/day`} at ${cur}${C.laneTemp.cost} each, ready in ${C.laneTemp.activationH} h (helps ${Math.round(ltUse * 100)}% of the ${settings.windowH} h window)${an.items.some(i => i.viaBypass) ? '; on a closed road they run the bypass' : ''}. ${C.shift ? `Extra sort shift: ${shiftHubs.length ? `up to ${f(shiftHubs.reduce((s, i) => s + (C.shift.capByHub?.[i.hub] ?? C.shift.share * Rg.H[i.hub].cap) * shUse, 0))} at ${shiftHubs.map(i => N[i.hub]).join(', ')}` : 'no hub needs one'}, ${cur}${C.shift.cost} each, ready in ${C.shift.activationH} h.` : ''}` : `Recovers up to ${f(lanePool)} packages/day. $1.60 each. Takes hours to stand up.`,
+    div: `${V.sol.total >= 1 ? `Cheapest detours through lanes${V.hubs.length ? ' and hubs' : ''} that still have room: up to ${f(V.sol.total)} ${word}/day at about ${cur}${uc.toFixed(2)} each.` : `No usable detour right now${V.laneGap > 0 ? ': the lanes around the damaged ones have no spare room' : ': no lane is over capacity'}.`}${atRisk > 0 && V.sol.total >= 1 && V.sol.total < V.gap * .25 ? ' Little room because most nearby lanes are also damaged.' : ''}${tooSlow.length ? ` Detours for ${tooSlow.map(([k]) => k.split('-').map(x => N[x]).join('–')).join(', ')} are too slow to keep the promise.` : ''}`,
+    cap: india ? `Market trucks: ${lanePool < 1 ? 'no damaged lane needs them' : `up to ${f(lanePool * ltUse)} ${word}/day`} at ${cur}${C.laneTemp.cost} each, ready in ${C.laneTemp.activationH} h (helps ${Math.round(ltUse * 100)}% of the ${settings.windowH} h window)${V.items.some(i => i.viaBypass) ? '; on a closed road they run the bypass' : ''}. ${C.shift ? `Extra sort shift: ${shiftHubs.length ? `up to ${f(shiftHubs.reduce((s, i) => s + (i.shiftCap ?? C.shift.capByHub?.[i.hub] ?? C.shift.share * Rg.H[i.hub].cap) * shUse, 0))} at ${shiftHubs.map(i => N[i.hub]).join(', ')}` : 'no hub needs one'}, ${cur}${C.shift.cost} each, ready in ${C.shift.activationH} h.` : ''}` : `Recovers up to ${f(lanePool)} packages/day. $1.60 each. Takes hours to stand up.`,
     pri: `SLA-critical ${word} (about ${critPct || Math.round(C.critShare * 100)}% of those at risk) get the scarce capacity first; the rest are rescheduled or late. Free.`,
     prm: `Gives a new date to the ${word} nothing else can carry, before customers are let down. ${cur}${C.credit} credit each${india ? `, plus an assumed ${cur}${C.trust} trust cost (double for SLA-critical)` : ''}.`
   };
@@ -134,25 +153,26 @@ export default function Home() {
 
   // Early warning when nothing overflows (original feature).
   const calm = atRisk < .5, anyCut = Object.values(an.ctx.cuts).some(v => v > 0);
-  let worse = null; if (calm && anyCut) for (let x = 1.1; x <= 3.01; x += .1) { if (analyse(Rg, buildContext(Rg, { ...ctxArgs, intensity: intensity * x, orders: mergedOrders })).gap > 0) { worse = x; break; } }
+  const viewOf = a => routeView ? analyseRoute(a, from, to, shipVol) : a;
+  let worse = null; if (calm && anyCut) for (let x = 1.1; x <= 3.01; x += .1) { if (viewOf(analyse(Rg, buildContext(Rg, { ...ctxArgs, intensity: intensity * x, orders: mergedOrders }))).gap > 0) { worse = x; break; } }
   const sx = worse ? Math.min(3, worse + .5) : null;
-  const stAn = sx ? analyse(Rg, buildContext(Rg, { ...ctxArgs, intensity: intensity * sx, orders: mergedOrders })) : null, st = stAn ? comparePlans(Rg, stAn).best : null;
-  const tight = [...an.lanes].filter(l => l.eff > 0).sort((a, b) => b.v / b.eff - a.v / a.eff).slice(0, 3);
+  const stAn = sx ? viewOf(analyse(Rg, buildContext(Rg, { ...ctxArgs, intensity: intensity * sx, orders: mergedOrders }))) : null, st = stAn ? comparePlans(Rg, stAn).best : null;
+  const tight = [...V.lanes].filter(l => l.eff > 0).sort((a, b) => b.v / b.eff - a.v / a.eff).slice(0, 3);
 
   // Sources (shown on screen and sent to the copilot).
   const dataSource = india && data?.source === 'supabase' ? { source: data.sample ? 'Supabase (rows marked as sample data)' : 'Supabase operational data', at: data.fetchedAt } : { source: 'Built-in sample data', at: null };
   const wxSource = sid === 'live' && live?.fetchedAt ? { source: 'Open-Meteo live', at: live.fetchedAt } : null;
   const trafficSource = india && useTraffic && traffic?.live ? { source: traffic.source, at: traffic.at, live: true } : { live: false };
   const scName = sid === 'live' ? 'Live conditions' : scenario?.name;
-  const facts = { scenario: scName, intensityPercent: intensity, ...planFacts(an, plan) };
+  const facts = { scenario: scName, intensityPercent: intensity, ...planFacts(V, plan) };
 
-  const template = () => !atRisk ? `Under "${scName}", every lane and hub stays within capacity, so no ${word} are at risk.` : `Under "${scName}", about ${f(an.gap)} ${word} a day no longer fit${w.length ? `, mainly on ${w.slice(0, 2).map(l => `${N[l.a]}–${N[l.b]}`).join(' and ')}` : ''}${an.hubGap ? `, with ${f(an.hubGap)} more than ${an.hubs.filter(h => h.over > 0).map(h => N[h.id]).join(', ')} can sort` : ''}.${an.etaRisk ? ` Road delays push another ${f(an.etaRisk)} past their promise.` : ''} ${nsel ? `Your plan (${selText(sel).toLowerCase()}) keeps ${f(plan.onTime)} on time, gives ${f(plan.prm)} a new date and leaves ${f(plan.late)} late, at ${money(plan.cost.total)} per day.` : `You have not chosen a response yet, so all of them would be late.`} ${sel.prm ? 'Revising promises is cheap but spends customer trust.' : plan.late > 0 ? 'No option here is free: you trade cost against late parcels and customer trust.' : 'Everything is protected, but check what that costs.'} This is a simulation with sample data.`;
+  const template = () => !atRisk ? `Under "${scName}", every lane and hub stays within capacity, so no ${word} are at risk.` : `Under "${scName}"${routeView ? `, for ${f(shipVol)} ${word}/day from ${N[from]} to ${N[to]} (${route.best.hubs.map(h => N[h]).join(" → ")})` : ""}, about ${f(V.gap)} ${word} a day no longer fit${w.length ? `, mainly on ${w.slice(0, 2).map(l => `${N[l.a]}–${N[l.b]}`).join(' and ')}` : ''}${V.hubGap ? `, with ${f(V.hubGap)} more than ${V.hubs.filter(h => h.over > 0).map(h => N[h.id]).join(', ')} can sort` : ''}.${V.etaRisk ? ` Road delays push another ${f(V.etaRisk)} past their promise.` : ''} ${nsel ? `Your plan (${selText(sel).toLowerCase()}) keeps ${f(plan.onTime)} on time, gives ${f(plan.prm)} a new date and leaves ${f(plan.late)} late, at ${money(plan.cost.total)} per day.` : `You have not chosen a response yet, so all of them would be late.`} ${sel.prm ? 'Revising promises is cheap but spends customer trust.' : plan.late > 0 ? 'No option here is free: you trade cost against late parcels and customer trust.' : 'Everything is protected, but check what that costs.'} This is a simulation with sample data.`;
   const explain = async () => { setEx({ loading: true }); try { const res = await fetch('/api/explain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(facts) }); const j = await res.json(); if (res.ok && j.text) return setEx({ text: j.text, source: 'Gemini AI' }); throw 0; } catch (e) { setEx({ text: template(), source: 'Template (Gemini not available)' }); } };
 
   const copilotState = () => ({
     region: rg, usRegion, scenarioId: sid, intensity, wx: sid === 'live' ? live?.nodes : undefined, wxSource,
     traffic: Object.fromEntries(Object.entries(trafficLanes || {}).map(([key, v]) => [key, { travelMin: v.travelMin, freeMin: v.freeMin, source: v.source, at: v.at, live: v.live }])),
-    trafficSource, orders, overrides, dataSource, sel, settings: india ? settings : {}, route: { from, to }
+    trafficSource, orders, overrides, dataSource, sel, settings: india ? settings : {}, route: { from, to }, scope: routeView ? 'route' : 'network', shipVol
   });
   const ask = async (text) => {
     const question = (text ?? q).trim(); if (!question || asking) return;
@@ -162,14 +182,15 @@ export default function Home() {
       const r = await fetch('/api/copilot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, history: hist, state: copilotState() }) });
       const j = await r.json(); if (!r.ok) throw new Error(j.error || 'failed');
       setChat(c => [...c, { role: 'assistant', text: j.text, evidence: j.evidence, mode: j.mode, note: j.note }]);
+      if (j.proposal?.route && (j.proposal.route.from !== from || j.proposal.route.to !== to)) { setFrom(j.proposal.route.from); setTo(j.proposal.route.to); setScope('route'); }
       if (j.proposal) setProposal({ ...j.proposal, from: 'copilot' });
     } catch (e) { setChat(c => [...c, { role: 'assistant', text: `The copilot is unavailable right now (${e.message}). The numbers on this page are still current.`, mode: 'error' }]); }
     setAsking(false);
   };
-  const proposeCurrent = (s, why) => { const p = allocate(Rg, an, s); setProposal({ sel: s, reason: why, facts: { scenario: scName, ...planFacts(an, p) }, from: 'optimiser' }); setSaveMsg(null); };
+  const proposeCurrent = (s, why) => { const p = allocate(Rg, V, s); setProposal({ sel: s, reason: why, facts: { scenario: scName, ...planFacts(V, p) }, from: 'optimiser' }); setSaveMsg(null); };
   const decide = async (decision) => {
     if (!proposal) return; setSaving(true);
-    const p = allocate(Rg, an, proposal.sel), pf = { scenario: scName, ...planFacts(an, p) };
+    const p = allocate(Rg, V, proposal.sel), pf = { scenario: scName, ...planFacts(V, p) };
     const payload = { decision, approver: approver || 'Manager', note, scenario: scName, route: india ? { from, to } : null, facts: pf, alternatives: cmp.ranked.slice(0, 4).map(x => ({ actions: selText(x.sel), cost: Math.round(x.cost.total), onTime: Math.round(x.onTime), revised: Math.round(x.prm), late: Math.round(x.late) })), sources: { data: dataSource, weather: wxSource || { source: 'Saved scenario (illustrative)' }, traffic: trafficSource } };
     let res; try { res = await (await fetch('/api/decisions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })).json(); } catch { res = { stored: false, reason: 'Decision service unavailable.' }; }
     const entry = { decision, approver: payload.approver, note, decided_at: res.at || new Date().toISOString(), plan: { scenario: scName, actions: pf.actions, incremental_cost: pf.incrementalCostPerDay, on_time: pf.onTime, revised_promise: pf.revisedPromise, still_late: pf.stillLate, currency: cur }, stored: !!res.stored };
@@ -183,25 +204,35 @@ export default function Home() {
   const P = Rg.P, proj = ([la, lo]) => projectIN(la, lo);
   const geom = key => india && traffic?.live && trafficLanes[key]?.geometry?.length > 1 ? trafficLanes[key].geometry.map(proj) : null;
   const routeKeys = new Set(route.best?.legs.map(x => x.lane.key) || []);
-  const divPaths = sel.div ? an.sol.plans.filter(p => p.units >= 1).slice(0, 6) : [];
+  const divPaths = sel.div ? V.sol.plans.filter(p => p.units >= 1).slice(0, 6) : [];
   const wxRows = india && route.best ? route.best.hubs : Object.keys(P);
   const metric = Rg.units === 'metric';
 
   return (<main>
-    <h1>Network Watch</h1>
-    <p className="sub">When weather, road traffic or a sort-centre overload hits the network, which {word} miss their promise, and what should the manager do? Decision support for a {india ? 'North India parcel network' : 'simulated transportation network'}.</p>
-    <section className="card warnbox"><b>{india && data?.source === 'supabase' && !data.sample ? 'Operational data from Supabase.' : 'Sample data.'}</b> {india && data?.source === 'supabase' && !data.sample ? 'Hubs, lanes and orders come from Supabase where present; anything missing falls back to sample values.' : 'The networks (hubs, lanes, volumes, costs) and order profiles are invented for this demo.'} Saved scenarios are illustrative; "Live now" uses real current weather{india ? ' and live traffic comes from TomTom when available' : ''}. All outcomes are model estimates, not actual delayed-order counts. The model is rule-based, not machine learning.
-      {india && <div className="note" style={{ marginTop: 6 }}>Data: {dataSource.source}{dataSource.at ? ` (${tm(dataSource.at)})` : ''}{data?.source === 'sample' && data?.reason ? ` — ${data.reason}` : ''} · Traffic: {traffic?.live ? `${traffic.source}, ${tm(traffic.at)}` : traffic?.reason || 'loading...'} · Weather: {sid === 'live' ? (live?.fetchedAt ? `Open-Meteo, ${tm(live.fetchedAt)}` : 'loading...') : 'saved scenario'}</div>}
-    </section>
-    <section className="card steps"><h2>Plan through a disruption</h2><ol>
-      <li><b>Detect.</b> Pick a region and scenario (or "Live now"){india ? ', and an origin and destination. The map shows lanes, closures, live traffic and the weather on your route.' : '. The map shows lane load under weather.'}</li>
-      <li><b>Quantify.</b> See the {word} without capacity{india ? ', those pushed past their promise by road delay,' : ''} and the lanes and hubs behind it.</li>
-      <li><b>Optimise.</b> Compare diversion, temporary capacity, SLA prioritisation and promise changes, alone or combined. "Recommend a plan" runs all 16 combinations.</li>
-      <li><b>Recommend.</b> The best feasible plan with its cost, delivery outcome, capacity impact and alternatives.</li>
-      <li><b>Explain and approve.</b> Ask the copilot, check the sources, and record the manager's approval.</li></ol></section>
+    <header className="top">
+      <div><h1>Network Watch</h1>
+        <p className="sub">When weather, road traffic or a sort-centre overload hits the network, which {word} miss their promise, and what should the manager do?</p></div>
+      <div className="status" aria-label="Data sources">
+        {india && <span className={`pill ${data?.source === 'supabase' ? 'ok' : data?.missing?.length || /missing|empty/.test(data?.reason || '') ? 'warn' : ''}`} title={data?.reason || dataSource.source}><i />Data: {data?.source === 'supabase' ? (data.sample ? 'Supabase (sample rows)' : 'Supabase') : /missing|empty/.test(data?.reason || '') ? 'Supabase tables not set up' : 'built-in sample'}</span>}
+        {india && <span className={`pill ${traffic?.live ? (traffic.failed?.length ? 'warn' : 'ok') : ''}`} title={traffic?.reason || ''}><i />Traffic: {traffic?.live ? `TomTom live, ${Object.keys(traffic.lanes || {}).length}/${Rg.L.length} lanes${traffic.loading ? '…' : ''}` : traffic?.loading ? 'loading…' : 'estimated'}</span>}
+        <span className={`pill ${sid === 'live' && live?.fetchedAt ? 'ok' : ''}`}><i />Weather: {sid === 'live' ? (live?.fetchedAt ? `live, ${tm(live.fetchedAt)}` : 'loading…') : 'saved scenario'}</span>
+      </div>
+    </header>
+    <details className="disclose"><summary><b>{india && data?.source === 'supabase' && !data.sample ? 'Operational data from Supabase.' : 'Sample data.'}</b> All outcomes are model estimates, not actual delayed-order counts.</summary>
+      <p className="note">{india && data?.source === 'supabase' && !data.sample ? 'Hubs, lanes and orders come from Supabase where present; anything missing falls back to sample values.' : 'The networks (hubs, lanes, volumes, costs) and order profiles are invented for this demo.'} Saved scenarios are illustrative; "Live now" uses real current weather{india ? ' and live traffic comes from TomTom when available' : ''}. The model is rule-based, not machine learning.{india && data?.reason ? ` Data note: ${data.reason}` : ''}</p></details>
+
+    <nav className="flow" aria-label="Plan steps">
+      {[
+        ['detect', '1 Detect', india && route.best ? `${N[from]} → ${N[to]} · ${scName}` : scName],
+        ['quantify', '2 Quantify', atRisk > .5 ? `${f(atRisk)} ${word}/day at risk` : 'Nothing at risk'],
+        ['optimise', '3 Optimise', nsel ? selText(sel) : 'Pick responses or Recommend'],
+        ['recommend', '4 Recommend', atRisk > .5 ? `${selText(best.sel)} · ${money(best.cost.total)}/day` : 'Do nothing'],
+        ['approve', '5 Approve', proposal ? 'Waiting for your approval' : (decisions.items?.length || decisions.local?.length) ? 'Decision recorded' : 'Ask the copilot or send a plan']
+      ].map(([id, t, d]) => <a key={id} href={'#' + id} className={id === 'quantify' && atRisk > .5 ? 'hot' : id === 'approve' && proposal ? 'wait' : ''}><b>{t}</b><span>{d}</span></a>)}
+    </nav>
 
     <div className="grid">
-      <section className="card"><h2>1. Detect — {Rg.name}: lane load{india ? ', closures and route' : ' under weather'}</h2>
+       <section className="card" id="detect"><h2>1. Detect — {Rg.name}: lane load{india ? ', closures and route' : ' under weather'}</h2>
         <svg viewBox={Rg.vb} role="img" aria-label="Map of hubs and lanes colored by utilization">
           {an.lanes.map(l => {
             const g = geom(l.key), u = l.v / Math.max(1, l.eff), sw = l.c / 1400 + 1;
@@ -216,24 +247,27 @@ export default function Home() {
         </svg>
         <div className="legend">Teal: under 85% of remaining capacity. Amber: 85-100%. Red: over capacity. Line width: original capacity. Hub ring: weather cut.{india ? ' Filled red hub: sort centre over capacity. Red dashed lane: road closed (simulated). Shaded band: your route (darker amber/red = more traffic delay). Dotted: diversions in your plan.' : ''}{india && traffic?.live ? ' Lanes follow real road geometry from TomTom.' : ''}</div>
         {india && <>
-          <h2 style={{ marginTop: 12 }}>Route: origin and destination</h2>
-          <div className="row">
+          <h2 style={{ marginTop: 12 }}>Your shipment</h2>
+          <div className="row" style={{ alignItems: 'center' }}>
             <label className="note">From <select value={from} onChange={e => setFrom(e.target.value)}>{Object.keys(P).map(i => <option key={i} value={i}>{N[i]}</option>)}</select></label>
             <label className="note">To <select value={to} onChange={e => setTo(e.target.value)}>{Object.keys(P).map(i => <option key={i} value={i}>{N[i]}</option>)}</select></label>
             <button className="chip" onClick={() => { const a = from; setFrom(to); setTo(a); }}>Swap</button>
+            <label className="note">Parcels / day <input type="number" min="1" max="50000" step="50" value={shipVol} onChange={e => setShipVol(Math.max(1, Math.min(50000, +e.target.value || 1)))} style={{ width: 90, font: 'inherit', padding: '4px 6px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--bg)', color: 'var(--ink)' }} /></label>
           </div>
-          {route.best ? <div className="verdict" style={{ borderLeft: `5px solid ${risks.some(r => r.level === 'bad') ? 'var(--bad)' : risks.length ? 'var(--warn)' : 'var(--ok)'}` }}>
-            <b>{route.best.hubs.map(h => N[h]).join(' → ')}</b>
-            <div className="note" style={{ color: 'var(--ink)' }}>{(route.best.minutes / 60).toFixed(1)} h for {f(route.best.km)} km ({(route.best.freeMinutes / 60).toFixed(1)} h without traffic). {route.directClosed ? `The direct ${N[route.directClosed.a]}–${N[route.directClosed.b]} lane is closed, so the route goes around it. ` : ''}{route.alt ? `Alternative: ${route.alt.hubs.map(h => N[h]).join(' → ')} (${(route.alt.minutes / 60).toFixed(1)} h).` : ''}</div>
-            {risks.length ? <ul className="why" style={{ marginTop: 6 }}>{risks.map((r, i) => <li key={i} style={{ color: r.level === 'bad' ? 'var(--bad)' : 'var(--ink)' }}>{r.text}</li>)}</ul> : <div className="note">No weather, traffic or capacity risk on this route right now.</div>}
-          </div> : <p className="verdict">No open route between {N[from]} and {N[to]}.</p>}
-          {route.best && <table><thead><tr><th>Leg</th><th>Travel</th><th>Delay</th><th>Capacity used</th><th>Source</th></tr></thead><tbody>{route.best.legs.map(({ from: a, to: b, lane: l }) => <tr key={l.key}><td>{N[a]} → {N[b]}</td><td>{Math.round(l.travelMin)} min</td><td>{Math.round(l.delayMin)} min</td><td style={{ color: col(l.v / Math.max(1, l.eff)) }}>{Math.round(l.v / Math.max(1, l.eff) * 100)}%</td><td>{l.traffic.live ? `TomTom ${tm(l.traffic.at)}` : 'Estimate'}</td></tr>)}</tbody></table>}
-          {od?.live && od.routes?.length > 0 && <p className="note" style={{ marginTop: 6 }}><b>Direct road options (TomTom, {tm(od.at)}):</b> {od.routes.map((r, i) => `${i ? 'alt ' + i : 'fastest'} ${Math.round(r.km)} km, ${(r.travelMin / 60).toFixed(1)} h (+${Math.round(r.delayMin)} min traffic)${r.events.length ? ', ' + r.events.map(e => `${e.count} ${e.type.toLowerCase().replace(/_/g, ' ')}`).join(', ') : ''}`).join(' · ')}. Live road events are shown for context and are separate from the simulated lane closures.</p>}
+          {from === to ? <p className="verdict">Pick two different hubs.</p> : route.best ? <div className="verdict" style={{ borderLeft: `5px solid ${ra.atRisk > .5 ? 'var(--bad)' : risks.length ? 'var(--warn)' : 'var(--ok)'}` }}>
+            <b>Planned route: {route.best.hubs.map(h => N[h]).join(' → ')}</b>
+            <div className="note" style={{ color: 'var(--ink)' }}>{(route.best.minutes / 60).toFixed(1)} h for {f(route.best.km)} km today ({(route.best.freeMinutes / 60).toFixed(1)} h on a normal day{route.best.legs.some(x => x.lane.traffic.live) ? ', TomTom' : ', estimated'}).</div>
+            <div className="note" style={{ color: 'var(--ink)', marginTop: 4 }}><b>{ra.atRisk > .5 ? `Disruption on this route: about ${f(ra.atRisk)} of your ${f(shipVol)} parcels/day are at risk` : 'No disruption on this route right now'}</b>{ra.atRisk > .5 ? ` — ${[ra.laneGap > .5 && `${f(ra.laneGap)} lose lane capacity on ${N[ra.worstLeg.a]}–${N[ra.worstLeg.b]} (${ra.worstLeg.reason === 'weather' ? 'weather' : ra.worstLeg.reason})`, ra.hubGap > .5 && `${f(ra.hubGap)} more cannot be sorted at ${N[ra.worstHub.id]}`, ra.etaRisk > .5 && `${f(ra.etaRisk)} miss their promise because of ${Math.round(ra.delayMin)} min of road delay`].filter(Boolean).join('; ')}. The plan below is for this shipment.` : '.'}</div>
+            {risks.length ? <ul className="why" style={{ marginTop: 6 }}>{risks.map((r, i) => <li key={i} style={{ color: r.level === 'bad' ? 'var(--bad)' : 'var(--ink)' }}>{r.text}</li>)}</ul> : <div className="note">No weather, traffic or capacity risk on the legs of this route.</div>}
+            {route.alts.length > 0 && <div className="note" style={{ marginTop: 6 }}><b>Alternatives today:</b> {route.alts.slice(0, 3).map(a => `${a.hubs.map(h => N[h]).join(' → ')} (${(a.minutes / 60).toFixed(1)} h${a.timeOK ? '' : ', too slow for the promise'})`).join(' · ')}</div>}
+          </div> : <p className="verdict">No route between {N[from]} and {N[to]}.</p>}
+          {route.best && <div className="tscroll"><table><thead><tr><th>Leg</th><th>Travel</th><th>Delay</th><th>Weather cut</th><th>Capacity used</th><th>Source</th></tr></thead><tbody>{route.best.legs.map(({ from: a, to: b, lane: l }) => <tr key={l.key}><td>{N[a]} → {N[b]}</td><td>{l.roadClosed ? 'closed' : `${Math.round(l.travelMin)} min`}</td><td>{Math.round(l.delayMin)} min</td><td>{Math.round(l.wcut * 95)}%</td><td style={{ color: l.roadClosed ? 'var(--bad)' : col(l.v / Math.max(1, l.eff)) }}>{l.roadClosed ? '—' : `${Math.round(l.v / Math.max(1, l.eff) * 100)}%`}</td><td>{l.traffic.live ? `TomTom ${tm(l.traffic.at)}` : 'Estimate'}</td></tr>)}</tbody></table></div>}
+          {od?.live && od.routes?.length > 0 && <p className="note" style={{ marginTop: 6 }}><b>Direct road options, door to door (TomTom, {tm(od.at)}):</b> {od.routes.map((r, i) => `${i ? `Alternative ${i}` : 'Fastest'}: ${Math.round(r.km)} km, ${(r.travelMin / 60).toFixed(1)} h (+${Math.round(r.delayMin)} min traffic)${r.events.length ? ', ' + r.events.map(e => `${e.count} ${e.type.toLowerCase().replace(/_/g, ' ')}`).join(', ') : ''}`).join(' · ')}. Shown for context; the plan uses the hub-to-hub legs above.</p>}
           <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
-            <button className="chip" onClick={() => loadTraffic(true)} disabled={traffic?.loading}>{traffic?.loading ? 'Refreshing traffic...' : 'Refresh live traffic'}</button>
+            <button className="chip" onClick={() => loadTraffic(legKeys ? legKeys.split(',') : [])} disabled={traffic?.loading}>{traffic?.loading ? 'Loading traffic...' : 'Refresh live traffic'}</button>
             <label className="note"><input type="checkbox" checked={useTraffic} onChange={e => setUseTraffic(e.target.checked)} disabled={!traffic?.live} /> Apply live traffic to the analysis</label>
           </div>
-          <p className="note">{traffic?.live ? `Live traffic for ${Object.keys(traffic.lanes).length} lanes from TomTom (${tm(traffic.at)}${traffic.cached ? ', cached up to 10 min' : ''}). Road delay changes ETAs and detour costs; it does not change sort or line-haul capacity.` : (traffic?.reason || 'Loading traffic...')}</p>
+          <p className="note">{traffic?.live ? `Live traffic for ${Object.keys(traffic.lanes || {}).length} of ${Rg.L.length} lanes from TomTom (${tm(traffic.at)})${traffic.loading ? ', loading the rest...' : traffic.failed?.length ? `; ${traffic.failed.length} lanes hit the TomTom rate limit and use estimates — press Refresh to retry` : ''}. Road delay changes ETAs and detour costs; it does not change sort or line-haul capacity.` : (traffic?.loading ? 'Loading live traffic...' : traffic?.reason || 'Loading traffic...')}</p>
         </>}
       </section>
 
@@ -249,10 +283,11 @@ export default function Home() {
           <label className="note" style={{ flex: 1, minWidth: 150 }}>Extra hours a detour may add: {settings.slackH} h<input type="range" min="1" max="12" value={settings.slackH} onChange={e => setSettings(s => ({ ...s, slackH: +e.target.value }))} style={{ width: '100%' }} /></label>
         </div>}
 
-        <h2 style={{ marginTop: 8 }}>2. Quantify</h2>
-        <div className="stats" aria-live="polite" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))' }}>{[['Over capacity / day', f(an.gap)], ...(india ? [['Past promise from road delay', f(an.etaRisk)]] : []), ['Delivered on time', f(plan.onTime)], ['Given a new date', f(plan.prm)], ['Still late', f(plan.late)], ['Plan cost / day', money(plan.cost.total)]].map(([a, b]) => <div key={a}><small>{a}</small><span className="big">{b}</span></div>)}</div>
+        <h2 id="quantify" style={{ marginTop: 8 }}>2. Quantify{routeView ? `: ${N[from]} → ${N[to]}, ${f(shipVol)} parcels/day` : india ? ': whole network' : ''}</h2>
+        {india && <div className="row" role="group" aria-label="Analysis scope"><button className="chip" aria-pressed={scope === 'route'} onClick={() => { setScope('route'); setSel(NONE); setRec(null); }}>Your shipment</button><button className="chip" aria-pressed={scope === 'network'} onClick={() => { setScope('network'); setSel(NONE); setRec(null); }}>Whole network</button></div>}
+        <div className="stats" aria-live="polite" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))' }}>{[[routeView ? 'No capacity / day' : 'Over capacity / day', f(V.gap)], ...(india ? [['Past promise from road delay', f(V.etaRisk)]] : []), ['Delivered on time', f(plan.onTime)], ['Given a new date', f(plan.prm)], ['Still late', f(plan.late)], ['Plan cost / day', money(plan.cost.total)]].map(([a, b]) => <div key={a}><small>{a}</small><span className="big">{b}</span></div>)}</div>
         <div className="bar" aria-hidden="true">{[[plan.div, 'var(--ok)'], [plan.temp + plan.shift, 'var(--mute)'], [plan.prm, 'var(--warn)'], [plan.late, 'var(--bad)']].map(([v, c], i) => <i key={i} style={{ width: v / t * 100 + '%', background: c }} />)}</div>
-        <p className="note">{word[0].toUpperCase() + word.slice(1)} are counted per lane{india ? ' and per hub' : ''}, so one that crosses two damaged lanes is counted twice. Treat totals as an upper bound.{india ? ' All figures are estimates.' : ''}</p>
+        <p className="note">{routeView ? `Your shipment takes its share of the worst bottleneck on its route (lane or sort centre), plus road delay checked against the promise slack in the order data. All figures are estimates.` : `${word[0].toUpperCase() + word.slice(1)} are counted per lane${india ? ' and per hub' : ''}, so one that crosses two damaged lanes is counted twice. Treat totals as an upper bound.${india ? ' All figures are estimates.' : ''}`}</p>
         <p className="verdict" aria-live="polite">{!atRisk ? 'No overflow with these conditions. Try another scenario or raise intensity.' : nsel ? `With your plan: ${f(plan.late)} ${word} still late${plan.lateCrit >= .5 ? ` (${f(plan.lateCrit)} SLA-critical)` : ''}, ${f(plan.prm)} given a new date, cost ${money(plan.cost.total)} per day.` : `Doing nothing: ${f(atRisk)} ${word} per day miss their promise. Pick a response below.`}</p>
         {calm && <div className="verdict" style={{ borderLeft: '5px solid var(--warn)' }}><b>Early warning: nothing to fix right now</b>
           <div className="note" style={{ color: 'var(--ink)' }}>{anyCut ? (worse ? `Weather is cutting capacity, but today's volume still fits. Overflow would start if conditions got about ${Math.round((worse - 1) * 100)}% worse.` : 'Weather is cutting capacity, but volume still fits even if conditions got much worse.') : 'Weather is not reducing capacity anywhere, so there is nothing for the planner to do.'}</div>
@@ -261,23 +296,23 @@ export default function Home() {
           <div className="note" style={{ marginTop: 6 }}>To see the responses in action, try a saved scenario:</div>
           <div className="row" style={{ marginTop: 4 }}>{Object.entries(Rg.SC).filter(([id]) => id !== 'calm').map(([id, sc]) => <button key={id} className="chip" onClick={() => setSid(id)}>{sc.name}</button>)}</div></div>}
 
-        <h2>3. Optimise — choose your response</h2>
+        <h2 id="optimise">3. Optimise — choose your response</h2>
         <button type="button" className="chip" onClick={recommend} style={{ marginBottom: 8, fontWeight: 700 }}>Recommend a plan</button>
         {rec && <p className="verdict">{rec}</p>}
         {OPTS.map(([key, n]) => <button key={key} className="opt" aria-pressed={sel[key]} onClick={() => tog(key)}><b>{n}</b><span>{desc[key]}</span></button>)}
-        {sel.div && an.sol.plans.length > 0 && <><h2>Reroutes the solver chose</h2><ul className="why">{an.sol.plans.slice(0, 4).map((p, i) => <li key={i}>{N[p.from]} to {N[p.to]} via {p.via.map(x => N[x]).join(' and ')}: {f(p.units)} {word} at {cur}{p.unit.toFixed(2)} each{india ? `, ${(p.minutes / 60).toFixed(1)} h vs ${(p.directMin / 60).toFixed(1)} h direct` : ''}.</li>)}</ul></>}
-        <h2 style={{ marginTop: 12 }}>Why these lanes{india ? ' and hubs' : ''}</h2><ul className="why">{w.length || an.hubs.some(h => h.over > 0) ? <>{w.map(l => <li key={l.key}>{N[l.a]} to {N[l.b]}: {l.roadClosed ? 'road closed (simulated)' : `capacity down ${Math.round((1 - l.eff / l.c) * 100)}% (${f(l.c)} to ${f(l.eff)})`}, volume {f(l.v)}{l.v > l.v0 + .5 ? ` (surge from ${f(l.v0)})` : ''}, short by {f(l.over)}.</li>)}{an.hubs.filter(h => h.over > 0).map(h => <li key={h.id}>{N[h.id]} sort centre: {f(h.load)} to sort vs capacity {f(h.eff)} (normally {f(h.cap)}), short by {f(h.over)}.</li>)}</> : <li>All lanes{india ? ' and hubs' : ''} within capacity.</li>}{an.etaRisk > 0 && <li>Road delay: about {f(an.etaRisk)} {word} on {an.items.filter(i => i.kind === 'eta').map(i => i.key.split('-').map(x => N[x]).join('–')).join(', ')} would arrive after their promise (estimate from order slack).</li>}</ul>
+        {sel.div && V.sol.plans.length > 0 && <><h2>Reroutes the solver chose</h2><ul className="why">{V.sol.plans.slice(0, 4).map((p, i) => <li key={i}>{N[p.from]} to {N[p.to]} via {p.via.map(x => N[x]).join(' and ')}: {f(p.units)} {word} at {cur}{p.unit.toFixed(2)} each{india ? `, ${(p.minutes / 60).toFixed(1)} h vs ${(p.directMin / 60).toFixed(1)} h direct` : ''}.</li>)}</ul></>}
+        <h2 style={{ marginTop: 12 }}>{routeView ? 'Why this route is at risk' : `Why these lanes${india ? ' and hubs' : ''}`}</h2><ul className="why">{w.length || V.hubs.some(h => h.over > 0) || V.etaRisk > .5 ? <>{w.map(l => <li key={l.key}>{N[l.a]} to {N[l.b]}: {l.roadClosed ? 'road closed (simulated)' : `capacity down ${Math.round((1 - l.eff / l.c) * 100)}% (${f(l.c)} to ${f(l.eff)})`}, volume {f(l.v)}{l.v > l.v0 + .5 ? ` (surge from ${f(l.v0)})` : ''}, short by {f(l.over)}.</li>)}{V.hubs.filter(h => h.over > 0).map(h => <li key={h.id}>{N[h.id]} sort centre: {f(h.load)} to sort vs capacity {f(h.eff)} (normally {f(h.cap)}), short by {f(h.over)}.</li>)}{V.etaRisk > .5 && <li>Road delay: about {f(V.etaRisk)} {word} {routeView ? `on this route (${Math.round(V.delayMin)} min of delay)` : `on ${V.items.filter(i => i.kind === 'eta').map(i => i.key.split('-').map(x => N[x]).join('–')).join(', ')}`} would arrive after their promise (estimate from order slack).</li>}</> : <li>{routeView ? 'Every leg and hub on this route is within capacity and on time.' : `All lanes${india ? ' and hubs' : ''} within capacity.`}</li>}</ul>
       </section>
     </div>
 
-    <section className="card" style={{ borderLeft: '5px solid var(--ok)' }}><h2>4. Recommended plan</h2>
-      {!atRisk ? <p className="verdict">Nothing to fix: every lane and hub is within capacity. Do nothing.</p> : <>
+    <section className="card" id="recommend" style={{ borderLeft: '5px solid var(--ok)' }}><h2>4. Recommended plan{routeView ? ` for ${N[from]} → ${N[to]} (${f(shipVol)} parcels/day)` : india ? ' for the whole network' : ''}</h2>
+      {!atRisk ? <p className="verdict">{routeView ? `Nothing to fix for ${N[from]} → ${N[to]}: weather, traffic and capacity on every leg are fine. Do nothing.` : 'Nothing to fix: every lane and hub is within capacity. Do nothing.'}</p> : <>
         <p className="verdict" style={{ fontSize: 17 }}>{selText(best.sel)}</p>
         <table><tbody>
-          <tr><th>Route changes</th><td>{[...an.lanes.filter(l => l.roadClosed).map(l => `${N[l.a]}–${N[l.b]} closed`), ...an.lanes.filter(l => !l.roadClosed && l.over > 0).slice(0, 4).map(l => `${N[l.a]}–${N[l.b]} reduced to ${f(l.eff)}/day`)].join('; ') || 'No lane closed or reduced'}.{best.sel.div && best.div > .5 ? ` Divert ${f(best.div)}: ${an.sol.plans.slice(0, 3).map(p => `${N[p.from]}→${N[p.to]} via ${p.via.map(x => N[x]).join(', ')}`).join('; ')}.` : ' No diversion.'}</td></tr>
+          <tr><th>Route changes</th><td>{routeView ? `Planned: ${route.best.hubs.map(h => N[h]).join(' → ')}. ` : ''}{[...V.lanes.filter(l => l.roadClosed).map(l => `${N[l.a]}–${N[l.b]} closed`), ...V.lanes.filter(l => !l.roadClosed && l.over > 0).slice(0, 4).map(l => `${N[l.a]}–${N[l.b]} reduced to ${f(l.eff)}/day`)].join('; ') || 'No lane closed or reduced'}.{best.sel.div && best.div > .5 ? ` Divert ${f(best.div)}: ${V.sol.plans.slice(0, 3).map(p => `${N[p.from]}→${N[p.to]} via ${p.via.map(x => N[x]).join(', ')}${routeView ? ` (${(p.minutes / 60).toFixed(1)} h)` : ''}`).join('; ')}.` : ' No diversion.'}</td></tr>
           <tr><th>Incremental cost</th><td><b>{money(best.cost.total)} / day</b>: transport {money(best.cost.transport)}, temporary capacity {money(best.cost.temporary)}, promise credits {money(best.cost.credits)}. Assumed customer-trust and late costs: {money(best.shadow.trust + best.shadow.late)}.</td></tr>
           <tr><th>Delivery impact</th><td>{f(best.onTime)} on time, {f(best.prm)} rescheduled, {f(best.late)} still late{best.lateCrit >= .5 ? ` (${f(best.lateCrit)} SLA-critical)` : ''}. Doing nothing: {f(cmp.doNothing.late)} late ({f(cmp.doNothing.lateCrit)} SLA-critical).</td></tr>
-          <tr><th>Capacity impact</th><td>Restored {f(best.temp + best.shift)} {word}/day with temporary capacity{best.temp > .5 && india ? ` (market trucks ready in ${C.laneTemp.activationH} h)` : ''}{best.shift > .5 ? ` (sort shift ready in ${C.shift.activationH} h)` : ''}; diverted {f(best.div)}. Remaining bottlenecks: {[...an.lanes.filter(l => l.over > 0).slice(0, 3).map(l => `${N[l.a]}–${N[l.b]}`), ...an.hubs.filter(h => h.over > 0).map(h => N[h.id] + ' hub')].join(', ') || 'none'}; {f(Math.max(0, an.gap - best.onTime))} {word} still need a new date or will be late.</td></tr>
+          <tr><th>Capacity impact</th><td>Restored {f(best.temp + best.shift)} {word}/day with temporary capacity{best.temp > .5 && india ? ` (market trucks ready in ${C.laneTemp.activationH} h)` : ''}{best.shift > .5 ? ` (sort shift ready in ${C.shift.activationH} h)` : ''}; diverted {f(best.div)}. Remaining bottlenecks: {[...V.lanes.filter(l => l.over > 0).slice(0, 3).map(l => `${N[l.a]}–${N[l.b]}`), ...V.hubs.filter(h => h.over > 0).map(h => N[h.id] + ' hub')].join(', ') || 'none'}; {f(Math.max(0, V.atRisk - best.onTime))} {word} still need a new date or will be late.</td></tr>
           <tr><th>Why this plan</th><td>Lowest total modelled cost of the 16 combinations{nextAlt ? `: ${money(nextAlt.objective - best.objective)} per day better than the next option (${selText(nextAlt.sel)}), once the assumed trust cost of revised promises and the cost of late ${word} are counted` : ''}. {best.sel.pri ? 'SLA-critical parcels get capacity first. ' : ''}{best.sel.prm && best.prm > .5 ? `Promise changes are used only for the ${f(best.prm)} that no physical fix can carry in time.` : ''}</td></tr>
         </tbody></table>
         <div className="row" style={{ marginTop: 10 }}>
@@ -292,20 +327,29 @@ export default function Home() {
       </>}
     </section>
 
-    <section className="card"><h2>5. Explain and approve</h2>
+    <section className="card" id="approve"><h2>5. Explain and approve</h2>
       <button className="go" type="button" onClick={explain} disabled={ex?.loading} style={{ font: 'inherit', fontWeight: 700, background: 'var(--sel)', color: 'var(--selt)', border: 0, borderRadius: 6, padding: '10px 16px', cursor: 'pointer', width: '100%' }}>{ex?.loading ? 'Writing...' : 'Explain my current plan'}</button>
       {ex?.text && <div className="verdict"><div>{ex.text}</div><div className="note">Source: {ex.source}. Written only from the numbers above.</div></div>}
 
       <h2 style={{ marginTop: 14 }}>Operations copilot</h2>
       <p className="note" style={hint}>Ask in English or Hinglish. Answers come from the same data and optimiser as this page, with sources. The copilot can propose a plan; only you can approve it.</p>
-      <div className="row">{['Why is Lucknow backing up tonight?', 'Which lanes between Jaipur and Delhi are at risk?', 'What is the lowest-cost feasible recovery plan?', 'How much extra will rerouting cost?', 'How many parcels will miss their delivery promise if we do nothing?', 'What if we add an extra shift instead of diverting all the parcels?'].map(s => <button key={s} className="chip" style={{ fontSize: 13 }} onClick={() => ask(s)} disabled={asking}>{s}</button>)}</div>
+      <p className="verdict" style={{ fontWeight: 400, margin: '0 0 8px' }}><b>Answering for:</b> {routeView ? `${N[from]} → ${N[to]}, ${f(shipVol)} parcels/day (planned ${route.best.hubs.map(h => N[h]).join(' → ')})` : `the whole ${Rg.name} network`} · {scName}{india ? ` · traffic ${trafficSource.live ? 'live' : 'estimated'}` : ''} · {atRisk > .5 ? `${f(atRisk)} ${word}/day at risk` : 'nothing at risk'}</p>
+      <div className="row">{(routeView ? [
+        `Why is ${N[from]} → ${N[to]} at risk?`,
+        'What is the lowest-cost feasible recovery plan?',
+        'How much extra will rerouting cost?',
+        'How many parcels will miss their delivery promise if we do nothing?',
+        `What if we add an extra shift instead of diverting all the parcels?`,
+        `${N[from].split(' ')[0]} se ${N[to].split(' ')[0]} ka route kaisa hai?`,
+        ...(ra?.worstHub ? [`Why is ${N[ra.worstHub.id]} backing up tonight?`] : [])
+      ] : ['Why is Lucknow backing up tonight?', 'Which lanes between Jaipur and Delhi are at risk?', 'What is the lowest-cost feasible recovery plan?', 'How much extra will rerouting cost?', 'How many parcels will miss their delivery promise if we do nothing?', 'What if we add an extra shift instead of diverting all the parcels?']).map(s => <button key={s} className="chip" style={{ fontSize: 13 }} onClick={() => ask(s)} disabled={asking}>{s}</button>)}</div>
       <div style={{ maxHeight: 420, overflowY: 'auto' }}>{chat.map((m, i) => <div key={i} className="verdict" style={{ fontWeight: m.role === 'user' ? 700 : 400, borderLeft: m.role === 'user' ? '5px solid var(--line)' : '5px solid var(--ok)', whiteSpace: 'pre-wrap' }}>
         {m.text}{m.role === 'assistant' && m.mode && <div className="note" style={{ marginTop: 4 }}>{m.mode === 'gemini' ? 'Gemini, grounded in tool results' : m.mode === 'rules' ? (m.note || 'Rule-based answer') : ''}</div>}<Evidence items={m.evidence} /></div>)}<div ref={chatEnd} /></div>
       <form className="row" onSubmit={e => { e.preventDefault(); ask(); }}><input value={q} onChange={e => setQ(e.target.value)} placeholder="e.g. Agra corridor mein kitne parcels late honge?" aria-label="Ask the copilot" style={{ flex: 1, minWidth: 200, font: 'inherit', padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--bg)', color: 'var(--ink)' }} /><button className="chip" type="submit" disabled={asking || !q.trim()} style={{ fontWeight: 700 }}>{asking ? 'Thinking...' : 'Ask'}</button></form>
 
       {proposal && <div className="verdict" style={{ borderLeft: '5px solid var(--warn)' }}>
         <b>Waiting for approval: {selText(proposal.sel)}</b>
-        <div className="note" style={{ color: 'var(--ink)' }}>{(() => { const p = allocate(Rg, an, proposal.sel); return `${f(p.onTime)} on time, ${f(p.prm)} rescheduled, ${f(p.late)} late, ${money(p.cost.total)} per day under current conditions.`; })()} Proposed by the {proposal.from}{proposal.reason ? `: ${proposal.reason}` : ''}.</div>
+        <div className="note" style={{ color: 'var(--ink)' }}>{(() => { const p = allocate(Rg, V, proposal.sel); return `${f(p.onTime)} on time, ${f(p.prm)} rescheduled, ${f(p.late)} late, ${money(p.cost.total)} per day under current conditions.`; })()} Proposed by the {proposal.from}{proposal.reason ? `: ${proposal.reason}` : ''}.</div>
         <div className="row" style={{ marginTop: 8 }}>
           <input value={approver} onChange={e => setApprover(e.target.value)} placeholder="Your name" aria-label="Approver name" style={{ font: 'inherit', padding: '6px 8px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--panel)', color: 'var(--ink)' }} />
           <input value={note} onChange={e => setNote(e.target.value)} placeholder="Note (optional)" aria-label="Decision note" style={{ flex: 1, minWidth: 160, font: 'inherit', padding: '6px 8px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--panel)', color: 'var(--ink)' }} />
