@@ -6,6 +6,16 @@ Default region: **North India** (17 hubs, 29 lanes). The original **United State
 
 **Sample data:** hubs, lanes, volumes, costs and order profiles are invented unless real rows are loaded into Supabase. Every outcome is a model estimate, not an actual delayed-order count. See `PRD .md`.
 
+
+## Recent portfolio-demo improvements
+- **Cost transparency:** the recommendation view itemises rerouting, temporary transport, extra shifts, promise credits, assumed trust penalties and assumed late-parcel penalties as quantities × unit costs. Assumptions are labelled; these are not Delhivery operating rates.
+- **Feasibility checklist:** each recommended plan shows checks for modelled lane room, downstream hub sort room, detour slack and temporary intervention timing/capacity. It does not validate real truck/driver availability or live staffing rosters.
+- **Baseline comparisons:** compares the optimiser with do-nothing, diversion-only and forced promise-reset policies for the current scenario, plus unweighted averages across saved scenarios. These results compare policies only inside the synthetic model; they do not prove real-world superiority.
+- **Staffing stress test:** North India includes “Delhi NCR staffing shortfall (−25% sort capacity)” as a saved illustrative scenario. It reuses the existing hub-capacity-cut model; it is not live staffing data.
+- **Risk overlap adjustment:** estimated ETA exposure on lanes touching overloaded hubs is reduced by a capped overlap estimate to avoid adding the same estimated exposure twice. Aggregate data cannot identify individual parcels, so at-risk totals remain estimates.
+
+To validate performance against reality, the project would need historical shipment-level volumes and promise/actual delivery timestamps, observed lane/hub capacities, disruption windows, intervention costs, and records of what operators actually did.
+
 ## Run locally
 ```
 npm install
@@ -40,3 +50,9 @@ To use real data, load your own rows into `nw_hubs`, `nw_lanes`, `nw_orders` and
 
 ## Deploy
 Push to the existing GitHub repo; Vercel redeploys automatically (framework: Next.js, no build settings needed).
+
+## Model notes
+- **Weather cut:** a lane loses exactly the cut shown for its worse end (never more than 95%); a sort centre loses half of its own weather cut. The weather table, route table, map and copilot all use the same figure.
+- **Closed roads:** a simulated closure has no travel time, delay or traffic source anywhere on the page or in copilot answers.
+- **Forecast:** starts from the hub's current load shown on the map (sort-centre load / current capacity) and compounds at the chosen daily growth. No weekday pattern is modelled.
+- **Detours:** when a faster detour is not (fully) used, the page says whether capacity or cost is the reason.
