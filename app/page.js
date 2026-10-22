@@ -41,7 +41,7 @@ function Forecast({ Rg, lanes, hubs }) {
   // Start from the same load the map shows: sort-centre load vs its current capacity (India); lane load vs capacity otherwise.
   const base = hs ? hs.load / Math.max(1, hs.eff) : inc.reduce((s, l) => s + l.v, 0) / inc.reduce((s, l) => s + l.c, 0);
   const pts = Array.from({ length: 14 }, (_, d) => base * Math.pow(1 + gr / 100, d)); // steady compound growth
-  const br = pts.findIndex(v => v > 1), W = 700, H = 150, pad = 28, x = d => pad + d * (W - 2 * pad) / 13, y = v => H - 24 - (Math.min(v, 1.3) - .6) * (H - 44) / .7;
+  const br = pts.findIndex(v => v > 1), W = 700, H = 150, pad = 28, yMin = Math.max(0, Math.floor(Math.min(...pts, 1) * 10) / 10 - .1), yMax = Math.max(1.1, Math.ceil(Math.max(...pts, 1) * 10) / 10 + .1), x = d => pad + d * (W - 2 * pad) / 13, y = v => H - 24 - (v - yMin) * (H - 44) / (yMax - yMin);
   const word = Rg.id === 'in' ? 'parcels' : 'packages';
   return (<section className="card"><h2>Look ahead: capacity forecast for the next 14 days</h2>
     <div className="row"><label className="note">Hub: <select value={h} onChange={e => setHub(e.target.value)}>{ids.map(i => <option key={i} value={i}>{Rg.NM[i]}</option>)}</select></label>
@@ -51,7 +51,7 @@ function Forecast({ Rg, lanes, hubs }) {
       <polyline fill="none" strokeWidth="3" style={{ stroke: 'var(--ok)' }} points={pts.map((v, d) => x(d) + ',' + y(v)).join(' ')} />
       {pts.map((v, d) => <g key={d}><circle cx={x(d)} cy={y(v)} r={v > 1 ? 5 : 3} style={{ fill: v > 1 ? 'var(--bad)' : 'var(--ok)' }}><title>{`Day ${d + 1}: ${Math.round(v * 100)}% of capacity`}</title></circle>{d % 2 === 0 && <text x={x(d)} y={H - 6} fontSize="11" textAnchor="middle" style={{ fill: 'var(--mute)' }}>D{d + 1}</text>}</g>)}
     </svg>
-    <p className="verdict">{br >= 0 ? `${Rg.NM[h]} is forecast to pass 100% of capacity on day ${br + 1}. That gives the planner about ${br} days to add capacity or shift volume before ${word} are at risk.` : `${Rg.NM[h]} stays under capacity for the next 14 days at this growth rate.`}</p>
+    <p className="verdict">{base >= 1 ? "Already over capacity today." : br >= 0 ? `${Rg.NM[h]} is forecast to pass 100% of capacity on day ${br + 1}. That gives the planner about ${br} days to add capacity or shift volume before ${word} are at risk.` : `${Rg.NM[h]} stays under capacity for the next 14 days at this growth rate.`}</p>
     <p className="note">Simulated: starts from {Rg.NM[h]}'s current load ({Math.round(base * 100)}% of {hs ? 'sort-centre ' : ''}capacity, the same figure as the map) and grows by the same {gr}% every day, compounding. No weekday pattern is modelled. It is a simple growth rule, not a trained forecast.</p></section>);
 }
 
@@ -63,16 +63,17 @@ function Evidence({ items }) {
 
 function resetEveryPromisePlan(Rg, an) {
   const C = Rg.costs;
-  const risk = Math.max(0, an.atRisk || 0);
+  const risk = Math.max(0, Math.round(an.atRisk || 0));
   const totalItemAmount = (an.items || []).reduce((sum, item) => sum + item.amount, 0);
   const criticalShare = totalItemAmount > 0
     ? (an.items || []).reduce((sum, item) => sum + item.amount * (item.cs || 0), 0) / totalItemAmount
     : C.critShare;
+  const critical = Math.min(risk, Math.max(0, Math.round(risk * criticalShare)));
   const credits = risk * C.credit;
-  const trust = risk * (1 + criticalShare) * C.trust;
+  const trust = (risk + critical) * C.trust;
   return {
     sel: { div: false, cap: false, pri: false, prm: true },
-    div: 0, temp: 0, shift: 0, prm: risk, prmCrit: risk * criticalShare,
+    div: 0, temp: 0, shift: 0, prm: risk, prmCrit: critical,
     late: 0, lateCrit: 0, onTime: 0, poolCap: 0,
     cost: { transport: 0, temporary: 0, credits, total: credits },
     shadow: { trust, late: 0 }, objective: credits + trust,
@@ -157,8 +158,8 @@ export default function Home() {
   useEffect(() => { if (india && traffic?.live && legKeys && legKeys.split(',').some(k => !traffic.lanes?.[k]) && !traffic.loading) loadTraffic(legKeys.split(',')); }, [legKeys]);
 
   const tog = key => setSel(s => ({ ...s, [key]: !s[key] }));
-  const pick = x => { setRg(x); setSid(x === 'us' ? 'ian' : x === 'de' ? 'snow' : 'agra'); if (x === 'us') setUsRegion('all'); setSel(NONE); setRec(null); setK(100); setProposal(null); };
-  const pickUSRegion = x => { const next = getRegion('us', { usRegion: x }), preferred = { all: 'ian', west: 'west', midwest: 'blizzard', northeast: 'blizzard', southeast: 'ian', plains: 'plains' }[x]; setUsRegion(x); setSid(c => c === 'live' ? 'live' : (next.SC[preferred] ? preferred : Object.keys(next.SC)[0] || 'live')); setSel(NONE); setRec(null); setK(100); };
+  const pick = x => { setRg(x); setSid(x === 'us' ? 'ian' : x === 'de' ? 'snow' : 'agra'); if (x === 'us') setUsRegion('all'); setSel(NONE); setRec(null); setK(100); setProposal(null); setSaveMsg('Pending approval cleared because the region changed.'); };
+  const pickUSRegion = x => { const next = getRegion('us', { usRegion: x }), preferred = { all: 'ian', west: 'west', midwest: 'blizzard', northeast: 'blizzard', southeast: 'ian', plains: 'plains' }[x]; setUsRegion(x); setSid(c => c === 'live' ? 'live' : (next.SC[preferred] ? preferred : Object.keys(next.SC)[0] || 'live')); setSel(NONE); setRec(null); setK(100); setProposal(null); setSaveMsg('Pending approval cleared because the region changed.'); };
 
   // Option descriptions from the current analysis.
   const lanePool = C.laneTemp.share * V.items.filter(i => i.kind === 'lane' && i.tempOK).reduce((s, i) => s + i.lost, 0);
@@ -205,7 +206,7 @@ export default function Home() {
   const facts = { scenario: scName, intensityPercent: intensity, ...planFacts(V, plan) };
 
   const template = () => !atRisk ? `Under "${scName}", every lane and hub stays within capacity, so no ${word} are at risk.` : `Under "${scName}"${routeView ? `, for ${f(shipVol)} ${word}/day from ${N[from]} to ${N[to]} (${route.best.hubs.map(h => N[h]).join(" → ")})` : ""}, about ${f(V.gap)} ${word} a day no longer fit${w.length ? `, mainly on ${w.slice(0, 2).map(l => `${N[l.a]}–${N[l.b]}`).join(' and ')}` : ''}${V.hubGap ? `, with ${f(V.hubGap)} more than ${V.hubs.filter(h => h.over > 0).map(h => N[h.id]).join(', ')} can sort` : ''}.${V.etaRisk ? ` Road delays push another ${f(V.etaRisk)} past their promise.` : ''} ${nsel ? `Your plan (${selText(sel).toLowerCase()}) keeps ${f(plan.onTime)} on time, gives ${f(plan.prm)} a new date and leaves ${f(plan.late)} late, at ${money(plan.cost.total)} per day.` : `You have not chosen a response yet, so all of them would be late.`} ${sel.prm ? 'Revising promises is cheap but spends customer trust.' : plan.late > 0 ? 'No option here is free: you trade cost against late parcels and customer trust.' : 'Everything is protected, but check what that costs.'} This is a simulation with sample data.`;
-  const explain = async () => { setEx({ loading: true }); try { const res = await fetch('/api/explain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(facts) }); const j = await res.json(); if (res.ok && j.text) return setEx({ text: j.text, source: 'Gemini AI' }); throw 0; } catch (e) { setEx({ text: template(), source: 'Template (Gemini not available)' }); } };
+  const explain = async () => { setEx({ loading: true }); try { const res = await fetch('/api/explain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(facts) }); const j = await res.json(); if (res.ok && j.text) return setEx({ text: j.text, source: 'Gemini AI' }); throw 0; } catch (e) { setEx({ text: template(), source: 'Rules-based summary (uses the displayed model estimates)' }); } };
 
   const copilotState = () => ({
     region: rg, usRegion, scenarioId: sid, intensity, wx: sid === 'live' ? live?.nodes : undefined, wxSource,
@@ -251,7 +252,7 @@ export default function Home() {
       <div><h1>Network Watch</h1>
         <p className="sub">When weather, road traffic or a sort-centre overload hits the network, which {word} miss their promise, and what should the manager do?</p></div>
       <div className="status" aria-label="Data sources">
-        {india && <span className={`pill ${data?.source === 'supabase' ? 'ok' : data?.missing?.length || /missing|empty/.test(data?.reason || '') ? 'warn' : ''}`} title={data?.reason || dataSource.source}><i />Data: {data?.source === 'supabase' ? (data.sample ? 'Supabase (sample rows)' : 'Supabase') : /missing|empty/.test(data?.reason || '') ? 'Supabase tables not set up' : 'built-in sample'}</span>}
+        {india && <span className={`pill ${data?.source === 'supabase' ? 'ok' : ''}`} title={data?.source === 'supabase' ? (data.sample ? 'Supabase contains sample rows' : 'Operational data loaded from Supabase') : 'Using built-in sample network data for this prototype'}><i />Data: {data?.source === 'supabase' ? (data.sample ? 'Supabase (sample rows)' : 'Supabase') : 'built-in sample'}</span>}
         {india && <span className={`pill ${traffic?.live ? (traffic.failed?.length ? 'warn' : 'ok') : ''}`} title={traffic?.reason || ''}><i />Traffic: {traffic?.live ? `TomTom live, ${Object.keys(traffic.lanes || {}).length}/${Rg.L.length} lanes${traffic.loading ? '…' : ''}` : traffic?.loading ? 'loading…' : 'estimated'}</span>}
         <span className={`pill ${sid === 'live' && live?.fetchedAt ? 'ok' : ''}`}><i />Weather: {sid === 'live' ? (live?.fetchedAt ? `live, ${tm(live.fetchedAt)}` : 'loading…') : 'saved scenario'}</span>
       </div>
@@ -265,7 +266,7 @@ export default function Home() {
         ['quantify', '2 Quantify', atRisk > .5 ? `${f(atRisk)} ${word}/day at risk` : 'Nothing at risk'],
         ['optimise', '3 Optimise', nsel ? selText(sel) : 'Pick responses or Recommend'],
         ['recommend', '4 Recommend', atRisk > .5 ? `${selText(best.sel)} · ${money(best.cost.total)}/day` : 'Do nothing'],
-        ['approve', '5 Approve', proposal ? 'Waiting for your approval' : (decisions.items?.length || decisions.local?.length) ? 'Decision recorded' : 'Ask the copilot or send a plan']
+        ['approve', '5 Approve', proposal ? 'Waiting for your approval' : (decisions.items?.length || decisions.local?.length) ? 'No pending approval · history available' : 'Ask the copilot or send a plan']
       ].map(([id, t, d]) => <a key={id} href={'#' + id} className={id === 'quantify' && atRisk > .5 ? 'hot' : id === 'approve' && proposal ? 'wait' : ''}><b>{t}</b><span>{d}</span></a>)}
     </nav>
 
@@ -287,10 +288,10 @@ export default function Home() {
         {india && <>
           <h2 style={{ marginTop: 12 }}>Your shipment</h2>
           <div className="row" style={{ alignItems: 'center' }}>
-            <label className="note">From <select value={from} onChange={e => setFrom(e.target.value)}>{Object.keys(P).map(i => <option key={i} value={i}>{N[i]}</option>)}</select></label>
-            <label className="note">To <select value={to} onChange={e => setTo(e.target.value)}>{Object.keys(P).map(i => <option key={i} value={i}>{N[i]}</option>)}</select></label>
-            <button className="chip" onClick={() => { const a = from; setFrom(to); setTo(a); }}>Swap</button>
-            <label className="note">Parcels / day <input type="number" min="1" max="50000" step="50" value={shipVol} onChange={e => setShipVol(Math.max(1, Math.min(50000, +e.target.value || 1)))} style={{ width: 90, font: 'inherit', padding: '4px 6px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--bg)', color: 'var(--ink)' }} /></label>
+            <label className="note">From <select value={from} onChange={e => { setFrom(e.target.value); setProposal(null); setSaveMsg('Pending approval cleared because the shipment route changed.'); }}>{Object.keys(P).map(i => <option key={i} value={i}>{N[i]}</option>)}</select></label>
+            <label className="note">To <select value={to} onChange={e => { setTo(e.target.value); setProposal(null); setSaveMsg('Pending approval cleared because the shipment route changed.'); }}>{Object.keys(P).map(i => <option key={i} value={i}>{N[i]}</option>)}</select></label>
+            <button className="chip" onClick={() => { const a = from; setFrom(to); setTo(a); setProposal(null); setSaveMsg('Pending approval cleared because the shipment route changed.'); }}>Swap</button>
+            <label className="note">Parcels / day <input type="number" min="1" max="50000" step="50" value={shipVol} onChange={e => { setShipVol(Math.max(1, Math.min(50000, +e.target.value || 1))); setProposal(null); setSaveMsg('Pending approval cleared because shipment volume changed.'); }} style={{ width: 90, font: 'inherit', padding: '4px 6px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--bg)', color: 'var(--ink)' }} /></label>
           </div>
           {from === to ? <p className="verdict">Pick two different hubs.</p> : route.best ? <div className="verdict" style={{ borderLeft: `5px solid ${ra.atRisk > .5 ? 'var(--bad)' : risks.length ? 'var(--warn)' : 'var(--ok)'}` }}>
             <b>Planned route: {route.best.hubs.map(h => N[h]).join(' → ')}</b>
@@ -310,10 +311,10 @@ export default function Home() {
       </section>
 
       <section className="card"><h2>{india ? 'Region & scenario' : '1. Country, US region & weather'}</h2>
-        <label className="note">Region: <select value={rg} onChange={e => pick(e.target.value)} style={{ font: 'inherit', marginLeft: 4, marginBottom: 8 }}><option value="in">North India</option><option value="us">United States</option><option value="de">Germany</option></select></label>
+        <label className="note">Region: <select value={rg} onChange={e => pick(e.target.value)} style={{ font: 'inherit', marginLeft: 4, marginBottom: 8 }}><option value="in">North India</option></select></label>
         {rg === 'us' && <label className="note" style={{ display: 'block', marginBottom: 8 }}>US region: <select value={usRegion} onChange={e => pickUSRegion(e.target.value)} style={{ font: 'inherit', marginLeft: 4, marginBottom: 4 }}>{Object.entries(US_REGION_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><span style={{ display: 'block', fontSize: 12, marginTop: 2 }}>Regional views filter hubs and lanes; boundary hubs may appear in more than one view.</span></label>}
         <p className="note" style={hint}>{Rg.hint}</p>
-        <div className="row">{[...Object.entries(Rg.SC).map(([id, s]) => [id, s.name]), ['live', 'Live now']].map(([id, n]) => <button key={id} className="chip" aria-pressed={sid === id} onClick={() => setSid(id)}>{n}</button>)}</div>
+        <div className="row">{[...Object.entries(Rg.SC).map(([id, s]) => [id, s.name]), ['live', 'Live now']].map(([id, n]) => <button key={id} className="chip" aria-pressed={sid === id} onClick={() => { setSid(id); setProposal(null); setSaveMsg('Pending approval cleared because the scenario changed.'); }}>{n}</button>)}</div>
         {sid === 'live' ? <><LiveBox live={live} Rg={Rg} us={rg === 'us'} region={usRegion} gap={an.gap} word={word} />{live && !live.error && <button className="chip" onClick={() => { setLiveD(d => ({ ...d, [liveKey]: null })); setTimeout(loadLive, 0); }}>Refresh live weather</button>}</> : <p className="note">{scenario?.note}</p>}
         <label className="note">{sid === 'live' ? 'Live weather intensity: actual readings (not adjustable)' : `Saved-scenario intensity: ${k}%`}<input type="range" min="0" max="100" value={k} disabled={sid === 'live'} onChange={e => setK(+e.target.value)} style={{ width: '100%', opacity: sid === 'live' ? .55 : 1 }} /></label>
         {india && <div className="row" style={{ marginTop: 6 }}>
@@ -321,19 +322,19 @@ export default function Home() {
           <label className="note" style={{ flex: 1, minWidth: 150 }}>Extra hours a detour may add: {settings.slackH} h<input type="range" min="1" max="12" value={settings.slackH} onChange={e => setSettings(s => ({ ...s, slackH: +e.target.value }))} style={{ width: '100%' }} /></label>
         </div>}
 
-        <h2 id="quantify" style={{ marginTop: 8 }}>2. Quantify{routeView ? `: ${N[from]} → ${N[to]}, ${f(shipVol)} parcels/day` : india ? ': whole network' : ''}</h2>
-        {india && <div className="row" role="group" aria-label="Analysis scope"><button className="chip" aria-pressed={scope === 'route'} onClick={() => { setScope('route'); setSel(NONE); setRec(null); }}>Your shipment</button><button className="chip" aria-pressed={scope === 'network'} onClick={() => { setScope('network'); setSel(NONE); setRec(null); }}>Whole network</button></div>}
-        <div className="stats" aria-live="polite" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))' }}>{[[routeView ? 'No capacity / day' : 'Over capacity / day', f(V.gap)], ...(india ? [['Past promise from road delay', f(V.etaRisk)]] : []), ['Delivered on time', f(plan.onTime)], ['Given a new date', f(plan.prm)], ['Still late', f(plan.late)], ['Plan cost / day', money(plan.cost.total)]].map(([a, b]) => <div key={a}><small>{a}</small><span className="big">{b}</span></div>)}</div>
+        <h2 id="quantify" style={{ marginTop: 8 }}>2. Quantify — Your selection{routeView ? `: ${N[from]} → ${N[to]}, ${f(shipVol)} parcels/day` : india ? ': whole network' : ''}</h2>
+        {india && <div className="row" role="group" aria-label="Analysis scope"><button className="chip" aria-pressed={scope === 'route'} onClick={() => { setScope('route'); setSel(NONE); setRec(null); setProposal(null); setSaveMsg('Pending approval cleared because the analysis scope changed.'); }}>Your shipment</button><button className="chip" aria-pressed={scope === 'network'} onClick={() => { setScope('network'); setSel(NONE); setRec(null); setProposal(null); setSaveMsg('Pending approval cleared because the analysis scope changed.'); }}>Whole network</button></div>}
+        <div className="stats" aria-live="polite" style={{ gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))' }}>{[[routeView ? 'No capacity / day' : 'Over capacity / day', f(V.gap)], ...(india ? [['Past promise from road delay', f(V.etaRisk)]] : []), ['Physically recovered', f(plan.onTime)], ['Given a new date', f(plan.prm)], ['Still late', f(plan.late)], ['Plan cost / day', money(plan.cost.total)]].map(([a, b]) => <div key={a}><small>{a}</small><span className="big">{b}</span></div>)}</div>
         {india && V.riskAccountingNote && <p className="note">Risk-counting note: {V.riskAccountingNote}</p>}
         <div className="bar" aria-hidden="true">{[[plan.div, 'var(--ok)'], [plan.temp + plan.shift, 'var(--mute)'], [plan.prm, 'var(--warn)'], [plan.late, 'var(--bad)']].map(([v, c], i) => <i key={i} style={{ width: v / t * 100 + '%', background: c }} />)}</div>
         <p className="note">{routeView ? `Your shipment takes its share of the worst bottleneck on its route (lane or sort centre), plus road delay checked against the promise slack in the order data. All figures are estimates.` : `${word[0].toUpperCase() + word.slice(1)} are counted per lane${india ? ' and per hub' : ''}, so one that crosses two damaged lanes is counted twice. Treat totals as an upper bound.${india ? ' All figures are estimates.' : ''}`}</p>
-        <p className="verdict" aria-live="polite">{sid === 'live' && !wx ? (live?.error ? 'Live weather could not be loaded, so this page cannot judge live conditions. Pick a saved scenario or refresh later.' : 'Loading live weather...') : !atRisk ? 'No overflow with these conditions. Try another scenario or raise intensity.' : nsel ? `With your plan: ${f(plan.late)} ${word} still late${plan.lateCrit >= .5 ? ` (${f(plan.lateCrit)} SLA-critical)` : ''}, ${f(plan.prm)} given a new date, cost ${money(plan.cost.total)} per day.` : `Doing nothing: ${f(atRisk)} ${word} per day miss their promise. Pick a response below.`}</p>
+        <p className="verdict" aria-live="polite">{sid === 'live' && !wx ? (live?.error ? 'Live weather could not be loaded, so this page cannot judge live conditions. Pick a saved scenario or refresh later.' : 'Loading live weather...') : !atRisk ? 'No overflow with these conditions. Try another scenario or raise intensity.' : nsel ? `With your plan: ${f(plan.onTime)} ${word} physically recovered, ${f(plan.prm)} given a revised promise, and ${f(plan.late)} late after the revised plan${plan.lateCrit >= .5 ? ` (${f(plan.lateCrit)} SLA-critical)` : ''}. Against the original promise, estimated exposure was ${f(atRisk)} ${word}. Operating cost: ${money(plan.cost.total)} per day.` : `Doing nothing: ${f(atRisk)} ${word} per day miss their promise. Pick a response below.`}</p>
         {calm && <div className="verdict" style={{ borderLeft: '5px solid var(--warn)' }}><b>Early warning: nothing to fix right now</b>
           <div className="note" style={{ color: 'var(--ink)' }}>{anyCut ? (worse ? `Weather is cutting capacity, but today's volume still fits. Overflow would start if conditions got about ${Math.round((worse - 1) * 100)}% worse.` : 'Weather is cutting capacity, but volume still fits even if conditions got much worse.') : 'Weather is not reducing capacity anywhere, so there is nothing for the planner to do.'}</div>
           <div className="note">Closest to capacity: {tight.map(l => `${N[l.a]} to ${N[l.b]} (${Math.round(l.v / Math.max(1, l.eff) * 100)}% used, room for ${f(l.spare)} more)`).join('; ')}.</div>
           {st && stAn.atRisk > 0 && <div className="note" style={{ color: 'var(--ink)' }}>If conditions got about {Math.round((sx - 1) * 100)}% worse: about {f(stAn.gap)} {word}/day over capacity. Suggested response: {selText(st.sel).toLowerCase()}, costing about {money(st.cost.total)} per day.</div>}
           <div className="note" style={{ marginTop: 6 }}>To see the responses in action, try a saved scenario:</div>
-          <div className="row" style={{ marginTop: 4 }}>{Object.entries(Rg.SC).filter(([id]) => id !== 'calm').map(([id, sc]) => <button key={id} className="chip" onClick={() => setSid(id)}>{sc.name}</button>)}</div></div>}
+          <div className="row" style={{ marginTop: 4 }}>{Object.entries(Rg.SC).filter(([id]) => id !== 'calm').map(([id, sc]) => <button key={id} className="chip" onClick={() => { setSid(id); setProposal(null); setSaveMsg('Pending approval cleared because the scenario changed.'); }}>{sc.name}</button>)}</div></div>}
 
         <h2 id="optimise">3. Optimise — choose your response</h2>
         <button type="button" className="chip" onClick={recommend} style={{ marginBottom: 8, fontWeight: 700 }}>Recommend a plan</button>
@@ -350,7 +351,7 @@ export default function Home() {
         <table><tbody>
           <tr><th>Route changes</th><td>{routeView ? `Planned: ${route.best.hubs.map(h => N[h]).join(' → ')}. ` : ''}{[...V.lanes.filter(l => l.roadClosed).map(l => `${N[l.a]}–${N[l.b]} closed`), ...V.lanes.filter(l => !l.roadClosed && l.over > 0).slice(0, 4).map(l => `${N[l.a]}–${N[l.b]} reduced to ${f(l.eff)}/day`)].join('; ') || 'No lane closed or reduced'}.{best.sel.div && best.div > .5 ? ` Divert ${f(best.div)}: ${V.sol.plans.slice(0, 3).map(p => `${N[p.from]}→${N[p.to]} via ${p.via.map(x => N[x]).join(', ')}${routeView ? ` (${(p.minutes / 60).toFixed(1)} h)` : ''}`).join('; ')}.${(V.altNotes || []).length ? ' ' + V.altNotes.join(' ') : ''}` : ' No diversion.'}</td></tr>
           <tr><th>Incremental operating cost</th><td><b>{money(best.cost.total)} / day</b>: transport {money(best.cost.transport)}, temporary capacity {money(best.cost.temporary)}, promise credits {money(best.cost.credits)}. Assumed trust and late penalties are separate: {money(best.shadow.trust + best.shadow.late)}. Total modelled objective: <b>{money(best.objective)} / day</b>.</td></tr>
-          <tr><th>Delivery impact</th><td>{f(best.onTime)} on time, {f(best.prm)} rescheduled, {f(best.late)} still late{best.lateCrit >= .5 ? ` (${f(best.lateCrit)} SLA-critical)` : ''}. Doing nothing: {f(cmp.doNothing.late)} late ({f(cmp.doNothing.lateCrit)} SLA-critical).</td></tr>
+          <tr><th>Delivery impact</th><td>{f(best.onTime)} physically recovered, {f(best.prm)} given a revised promise, {f(best.late)} late after the revised plan{best.lateCrit >= .5 ? ` (${f(best.lateCrit)} SLA-critical)` : ''}. Doing nothing: {f(cmp.doNothing.late)} late against the original promise ({f(cmp.doNothing.lateCrit)} SLA-critical).</td></tr>
           <tr><th>Capacity impact</th><td>Restored {f(best.temp + best.shift)} {word}/day with temporary capacity{best.temp > .5 && india ? ` (market trucks ready in ${C.laneTemp.activationH} h)` : ''}{best.shift > .5 ? ` (sort shift ready in ${C.shift.activationH} h)` : ''}; diverted {f(best.div)}. Remaining bottlenecks: {[...V.lanes.filter(l => l.over > 0).slice(0, 3).map(l => `${N[l.a]}–${N[l.b]}`), ...V.hubs.filter(h => h.over > 0).map(h => N[h.id] + ' hub')].join(', ') || 'none'}; {f(Math.max(0, V.atRisk - best.onTime))} {word} still need a new date or will be late.</td></tr>
           <tr><th>Why this plan</th><td>Lowest total modelled cost of the 16 combinations{nextAlt ? `: ${money(nextAlt.objective - best.objective)} per day better than the next option (${selText(nextAlt.sel)}), once the assumed trust cost of revised promises and the cost of late ${word} are counted` : ''}. {best.sel.pri ? 'SLA-critical parcels get capacity first. ' : ''}{best.sel.prm && best.prm > .5 ? `Promise changes are used only for the ${f(best.prm)} that no physical fix can carry in time.` : ''}</td></tr>
         </tbody></table>
@@ -360,13 +361,13 @@ export default function Home() {
           <tr><td>Temporary transport capacity</td><td>{f(best.temp)}</td><td>{money(C.laneTemp.cost)} / parcel</td><td>{f(best.temp)} × {money(C.laneTemp.cost)}</td><td>{money(best.temp * C.laneTemp.cost)}</td><td>Assumption: configured temporary-capacity unit cost</td></tr>
           <tr><td>Extra sorting shift</td><td>{f(best.shift)}</td><td>{money(C.shift?.cost || 0)} / parcel</td><td>{f(best.shift)} × {money(C.shift?.cost || 0)}</td><td>{money(best.shift * (C.shift?.cost || 0))}</td><td>{C.shift ? 'Assumption: configured shift cost; staffing availability is not verified' : 'Not configured for this region'}</td></tr>
           <tr><td>Promise credits</td><td>{f(best.prm)}</td><td>{money(C.credit)} / revised parcel</td><td>{f(best.prm)} × {money(C.credit)}</td><td>{money(best.cost.credits)}</td><td>Assumption: configured customer credit</td></tr>
-          <tr><td>Customer-trust penalty</td><td>{f(best.prm + best.prmCrit)} weighted parcel units</td><td>{money(C.trust)} / unit</td><td>({f(best.prm)} + {f(best.prmCrit)}) × {money(C.trust)}</td><td>{money(best.shadow.trust)}</td><td>Assumption: proxy penalty, not measured revenue or trust loss</td></tr>
+          <tr><td>Customer-trust penalty</td><td>{Math.round(best.prm) + Math.round(best.prmCrit)} weighted parcel units</td><td>{money(C.trust)} / unit</td><td>({Math.round(best.prm)} + {Math.round(best.prmCrit)}) × {money(C.trust)}</td><td>{money(best.shadow.trust)}</td><td>Assumption: proxy penalty, not measured revenue or trust loss</td></tr>
           <tr><td>Late-parcel penalty</td><td>{f(best.late - best.lateCrit)} standard + {f(best.lateCrit)} SLA-critical</td><td>{money(C.lateStd)} / standard; {money(C.lateCrit)} / critical</td><td>({f(best.late - best.lateCrit)} × {money(C.lateStd)}) + ({f(best.lateCrit)} × {money(C.lateCrit)})</td><td>{money(best.shadow.late)}</td><td>Assumption: proxy penalty, not measured actual loss</td></tr>
           <tr><th colSpan={4}>Total modelled objective</th><th>{money(best.objective)} / day</th><td>Operating cost + assumed trust + assumed late penalties</td></tr>
         </tbody></table></div>
         <p className="note">All unit costs and penalties are illustrative assumptions, not Delhivery rates. Transport unit cost is the average modelled path cost for the parcels diverted in this plan.</p>
         <h3 style={{ margin: '14px 0 6px', fontSize: 14 }}>Feasibility checklist for this recommendation</h3>
-        <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Check</th><th>Status</th><th>What this means</th></tr></thead><tbody>{feasibility.map((check, i) => <tr key={i}><td>{check.label}</td><td><b style={{ color: check.pass ? 'var(--ok)' : 'var(--bad)' }}>{check.pass ? 'PASS' : 'FAIL'}</b></td><td>{check.detail}</td></tr>)}</tbody></table></div>
+        <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Check</th><th>Status</th><th>What this means</th></tr></thead><tbody>{feasibility.map((check, i) => <tr key={i}><td>{check.label}</td><td><b style={{ color: check.pass === null ? 'var(--muted)' : check.pass ? 'var(--ok)' : 'var(--bad)' }}>{check.pass === null ? 'N/A' : check.pass ? 'PASS' : 'FAIL'}</b></td><td>{check.detail}</td></tr>)}</tbody></table></div>
         <p className="note">These checks validate constraints represented in the prototype only. They do not verify live truck/driver availability, actual rosters, or operational execution.</p>
         <div className="row" style={{ marginTop: 10 }}>
           <button className="chip" onClick={() => setSel(best.sel)}>Apply to my selection</button>
@@ -374,13 +375,13 @@ export default function Home() {
           {nsel > 0 && JSON.stringify(sel) !== JSON.stringify(best.sel) && <button className="chip" onClick={() => proposeCurrent(sel, 'Manager-selected plan')}>Send my selection for approval</button>}
         </div>
         <h2 style={{ marginTop: 12 }}>Alternatives</h2>
-        <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Plan</th><th>On time</th><th>New date</th><th>Late (SLA-critical)</th><th>Cost / day</th><th>Total modelled</th><th></th></tr></thead>
+        <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Plan</th><th>Physically recovered</th><th>Revised promise</th><th>Late after plan (SLA-critical)</th><th>Cost / day</th><th>Total modelled</th><th></th></tr></thead>
           <tbody>{[...cmp.ranked.slice(0, 6), ...(cmp.ranked.slice(0, 6).includes(cmp.doNothing) ? [] : [cmp.doNothing])].map((p, i) => <tr key={i} style={p === best ? { fontWeight: 700 } : undefined}><td>{p === best ? '★ ' : ''}{selText(p.sel)}</td><td>{f(p.onTime)}</td><td>{f(p.prm)}</td><td>{f(p.late)} ({f(p.lateCrit)})</td><td>{money(p.cost.total)}</td><td>{money(p.objective)}</td><td><button className="chip" style={{ padding: '2px 8px' }} onClick={() => setSel(p.sel)}>Use</button></td></tr>)}</tbody></table></div>
         <p className="note">Total modelled = operating cost + assumed trust cost of revised promises + assumed late-parcel penalties. The allocation is a min-cost flow over the risk buckets in this model; diversion paths use a greedy reroute approximation. All cost parameters are assumptions.</p>
       </>}
       <h3 style={{ margin: '14px 0 6px', fontSize: 14 }}>Baseline comparison — current scenario</h3>
-      <p className="note">These are modelled policy comparisons on the same invented network and assumptions, not evidence of real-world performance.</p>
-      <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Policy</th><th>Protected by physical recovery (modelled)</th><th>New date</th><th>Late</th><th>Operating cost / day</th><th>Total modelled cost / day</th></tr></thead><tbody>
+      <p className="note">These are modelled policy comparisons on the same invented network and assumptions, not evidence of real-world performance. A baseline may be cheaper than the best of the 16 intervention combinations; if so, that is a useful finding, not a result to hide.</p>
+      <div style={{ overflowX: 'auto' }}><table><thead><tr><th>Policy</th><th>Physically recovered</th><th>Revised promise</th><th>Late after plan</th><th>Operating cost / day</th><th>Total modelled cost / day</th></tr></thead><tbody>
         {[{ label: 'Network Watch optimiser (best of 16)', p: best }, { label: 'Do nothing', p: cmp.doNothing }, { label: 'Diversion only (no temporary capacity or promise changes)', p: diversionOnly }, { label: 'Reset every estimated at-risk parcel', p: resetBaseline }].map((row, i) => <tr key={i}><td>{row.label}</td><td>{f(row.p.onTime)}</td><td>{f(row.p.prm)}</td><td>{f(row.p.late)}</td><td>{money(row.p.cost.total)}</td><td>{money(row.p.objective)}</td></tr>)}
       </tbody></table></div>
       <h3 style={{ margin: '14px 0 6px', fontSize: 14 }}>Across saved scenarios — unweighted averages</h3>
@@ -395,7 +396,7 @@ export default function Home() {
       {ex?.text && <div className="verdict"><div>{ex.text}</div><div className="note">Source: {ex.source}. Written only from the numbers above.</div></div>}
 
       <h2 style={{ marginTop: 14 }}>Operations copilot</h2>
-      <p className="note" style={hint}>Ask in English or Hinglish. Answers come from the same data and optimiser as this page, with sources. The copilot can propose a plan; only you can approve it.</p>
+      <p className="note" style={hint}>Ask in English or Hinglish; the copilot responds in the language of your question. Answers come from the same data and optimiser as this page, with sources. The copilot can propose a plan; only you can approve it.</p>
       <p className="verdict" style={{ fontWeight: 400, margin: '0 0 8px' }}><b>Answering for:</b> {routeView ? `${N[from]} → ${N[to]}, ${f(shipVol)} parcels/day (planned ${route.best.hubs.map(h => N[h]).join(' → ')})` : `the whole ${Rg.name} network`} · {scName}{india ? ` · traffic ${trafficSource.live ? 'live' : 'estimated'}` : ''} · {atRisk > .5 ? `${f(atRisk)} ${word}/day at risk` : 'nothing at risk'}</p>
       <div className="row">{(routeView ? [
         `Why is ${N[from]} → ${N[to]} at risk?`,
@@ -412,7 +413,7 @@ export default function Home() {
 
       {proposal && <div className="verdict" style={{ borderLeft: '5px solid var(--warn)' }}>
         <b>Waiting for approval: {selText(proposal.sel)}</b>
-        <div className="note" style={{ color: 'var(--ink)' }}>{(() => { const p = allocate(Rg, V, proposal.sel); return `${f(p.onTime)} on time, ${f(p.prm)} rescheduled, ${f(p.late)} late, ${money(p.cost.total)} per day under current conditions.`; })()} Proposed by the {proposal.from}{proposal.reason ? `: ${proposal.reason}` : ''}.</div>
+        <div className="note" style={{ color: 'var(--ink)' }}>{(() => { const p = allocate(Rg, V, proposal.sel); return `${f(p.onTime)} physically recovered, ${f(p.prm)} rescheduled, ${f(p.late)} late after the revised plan, ${money(p.cost.total)} per day under current conditions.`; })()} Proposed by the {proposal.from}{proposal.reason ? `: ${proposal.reason}` : ''}.</div>
         <div className="row" style={{ marginTop: 8 }}>
           <input value={approver} onChange={e => setApprover(e.target.value)} placeholder="Your name" aria-label="Approver name" style={{ font: 'inherit', padding: '6px 8px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--panel)', color: 'var(--ink)' }} />
           <input value={note} onChange={e => setNote(e.target.value)} placeholder="Note (optional)" aria-label="Decision note" style={{ flex: 1, minWidth: 160, font: 'inherit', padding: '6px 8px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--panel)', color: 'var(--ink)' }} />
